@@ -1,0 +1,83 @@
+[
+  {
+    "countryCode": "CH",
+    "countryName": "Switzerland",
+    "importerId": "ch-swiss-food-db",
+    "templateKind": "single_excel",
+    "status": "completed",
+    "blockedReason": "",
+    "officialSourceUrl": "https://naehrwertdaten.ch/en/downloads/"
+  },
+  {
+    "countryCode": "AU",
+    "countryName": "Australia",
+    "importerId": "au-afcd",
+    "templateKind": "multi_excel_directory",
+    "status": "completed",
+    "blockedReason": "",
+    "officialSourceUrl": "https://www.foodstandards.gov.au/science-data/food-nutrient-databases/afcd/data-files"
+  },
+  {
+    "countryCode": "NZ",
+    "countryName": "New Zealand",
+    "importerId": "nz-foodfiles",
+    "templateKind": "installer_package",
+    "status": "blocked",
+    "blockedReason": "FOODfiles Terms of Use require the data to be presented in original and unaltered form, which conflicts with the current normalization, canonical merge, and export pipeline.",
+    "officialSourceUrl": "https://foodcomposition.co.nz/foodfiles/"
+  },
+  {
+    "countryCode": "FR",
+    "countryName": "France",
+    "importerId": "fr-ciqual",
+    "templateKind": "single_excel",
+    "status": "completed",
+    "blockedReason": "",
+    "officialSourceUrl": "https://ciqual.anses.fr/cms/en/2025-anses-ciqual-table"
+  },
+  {
+    "countryCode": "DK",
+    "countryName": "Denmark",
+    "importerId": "dk-frida",
+    "templateKind": "single_excel",
+    "status": "completed",
+    "blockedReason": "",
+    "officialSourceUrl": "https://frida.fooddata.dk/?lang=en"
+  },
+  {
+    "countryCode": "DE",
+    "countryName": "Germany",
+    "importerId": "de-bls",
+    "templateKind": "single_excel",
+    "status": "queued",
+    "blockedReason": "",
+    "officialSourceUrl": "https://www.blsdb.de/"
+  },
+  {
+    "countryCode": "IT",
+    "countryName": "Italy",
+    "importerId": "it-crea",
+    "templateKind": "single_excel",
+    "status": "queued",
+    "blockedReason": "",
+    "officialSourceUrl": "https://www.crea.gov.it/en/-/tabella-di-composizione-degli-alimenti"
+  },
+  {
+    "countryCode": "ES",
+    "countryName": "Spain",
+    "importerId": "es-bedca",
+    "templateKind": "single_excel",
+    "status": "queued",
+    "blockedReason": "",
+    "officialSourceUrl": "https://www.bedca.net/"
+  },
+  {
+    "countryCode": "FI",
+    "countryName": "Finland",
+    "importerId": "fi-fineli",
+    "templateKind": "csv_directory",
+    "status": "queued",
+    "blockedReason": "",
+    "officialSourceUrl": "https://fineli.fi/fineli/en/avoin-data"
+  }
+]

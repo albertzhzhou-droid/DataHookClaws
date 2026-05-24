@@ -1,0 +1,7 @@
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test('{{COUNTRY_NAME}} importer scaffold placeholder', () {
+    expect('{{IMPORTER_ID}}', isNotEmpty);
+  });
+}

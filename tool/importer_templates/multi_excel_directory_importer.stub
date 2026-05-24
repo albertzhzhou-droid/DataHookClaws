@@ -1,0 +1,21 @@
+import '../models/import_models.dart';
+import '../models/raw_food_record.dart';
+import 'food_importer.dart';
+
+class {{IMPORTER_CLASS_NAME}} implements FoodImporter {
+  @override
+  String get id => '{{IMPORTER_ID}}';
+
+  @override
+  String get displayName => '{{COUNTRY_NAME}} importer';
+
+  @override
+  String get country => '{{COUNTRY_NAME}}';
+
+  @override
+  Future<List<RawFoodRecord>> importFoods(ImportRequest request) async {
+    throw UnimplementedError(
+      'Scaffold only. Implement {{COUNTRY_NAME}} multi-file parsing against the official package structure.',
+    );
+  }
+}
