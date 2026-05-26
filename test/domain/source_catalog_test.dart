@@ -14,13 +14,13 @@ void main() {
     );
   });
 
-  test('flattened source list retains integrated and cataloged sources', () {
+  test('flattened source list retains integrated and blocked sources', () {
     expect(
       nationalFoodSources.any((source) => source.status == 'Integrated'),
       isTrue,
     );
     expect(
-      nationalFoodSources.any((source) => source.status == 'Cataloged'),
+      nationalFoodSources.any((source) => source.status == 'Blocked'),
       isTrue,
     );
     expect(

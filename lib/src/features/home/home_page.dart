@@ -7,11 +7,13 @@ import '../../api/food_catalog_export_service.dart';
 import '../../data/food_repository.dart';
 import '../../data/importer_registry.dart';
 import '../../data/national_food_sources.dart';
+import '../../domain/export_share_service.dart';
 import '../../domain/search_orchestrator.dart';
 import '../../models/enrichment_queue_state.dart';
 import '../../models/food_details.dart';
 import '../../domain/sync_food_catalog_use_case.dart';
 import '../../models/food_item.dart';
+import '../../models/food_search_query.dart';
 import '../../models/import_log_entry.dart';
 import '../../models/import_models.dart';
 import '../../models/search_session_state.dart';
@@ -25,6 +27,9 @@ class HomePage extends StatefulWidget {
     required this.exportService,
     required this.entities,
     required this.importerDescriptors,
+    required this.exportShareService,
+    required this.onOpenOperations,
+    required this.onOpenSettings,
   });
 
   final FoodRepository repository;
@@ -33,6 +38,9 @@ class HomePage extends StatefulWidget {
   final FoodCatalogExportService exportService;
   final List<AdministrativeFoodEntity> entities;
   final List<ImporterDescriptor> importerDescriptors;
+  final ExportShareService exportShareService;
+  final VoidCallback onOpenOperations;
+  final VoidCallback onOpenSettings;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -41,6 +49,11 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final _searchController = TextEditingController();
   final _limitController = TextEditingController(text: '20');
+  final _countryFilterController = TextEditingController();
+  final _sourceFilterController = TextEditingController();
+  final _categoryFilterController = TextEditingController();
+  final _nutrientMinController = TextEditingController();
+  final _nutrientMaxController = TextEditingController();
   final Map<String, TextEditingController> _apiKeyControllers = {};
   final Map<String, TextEditingController> _queryControllers = {};
   final Map<String, TextEditingController> _pathControllers = {};
@@ -53,8 +66,12 @@ class _HomePageState extends State<HomePage> {
   bool _isExportingSummaryJson = false;
   bool _isExportingDetailedCsv = false;
   bool _isExportingSnapshot = false;
+  bool _isSharingExport = false;
+  bool _showAdvancedFilters = false;
   String? _statusMessage;
   String? _exportStatusMessage;
+  ExportArtifact? _latestExportArtifact;
+  NutrientPreset? _selectedNutrientPreset;
   SearchSessionState _searchState = SearchSessionState.idle();
   EnrichmentQueueState _enrichmentState = EnrichmentQueueState.idle();
   StreamSubscription<EnrichmentQueueState>? _enrichmentSubscription;
@@ -82,6 +99,11 @@ class _HomePageState extends State<HomePage> {
     _enrichmentSubscription?.cancel();
     widget.searchOrchestrator.cancelEnrichment(_searchState.query);
     _searchController.dispose();
+    _countryFilterController.dispose();
+    _sourceFilterController.dispose();
+    _categoryFilterController.dispose();
+    _nutrientMinController.dispose();
+    _nutrientMaxController.dispose();
     for (final controller in _apiKeyControllers.values) {
       controller.dispose();
     }
@@ -180,6 +202,25 @@ class _HomePageState extends State<HomePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _HeroPanel(foodCount: _foodCount),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: widget.onOpenSettings,
+                      icon: const Icon(Icons.settings_outlined),
+                      label: const Text('Settings'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: widget.onOpenOperations,
+                      icon: const Icon(Icons.monitor_heart_outlined),
+                      label: const Text('Operations'),
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 20),
               TextField(
                 controller: _searchController,
@@ -195,6 +236,28 @@ class _HomePageState extends State<HomePage> {
                     borderSide: BorderSide.none,
                   ),
                 ),
+              ),
+              const SizedBox(height: 12),
+              _AdvancedFiltersCard(
+                expanded: _showAdvancedFilters,
+                selectedPreset: _selectedNutrientPreset,
+                countryController: _countryFilterController,
+                sourceController: _sourceFilterController,
+                categoryController: _categoryFilterController,
+                minController: _nutrientMinController,
+                maxController: _nutrientMaxController,
+                onToggle: () {
+                  setState(() {
+                    _showAdvancedFilters = !_showAdvancedFilters;
+                  });
+                },
+                onPresetChanged: (preset) {
+                  setState(() {
+                    _selectedNutrientPreset = preset;
+                  });
+                },
+                onApply: () => _runSearch(_searchController.text),
+                onClear: _clearAdvancedFilters,
               ),
               const SizedBox(height: 20),
               Wrap(
@@ -329,6 +392,11 @@ class _HomePageState extends State<HomePage> {
                 isExportingSummaryJson: _isExportingSummaryJson,
                 isExportingDetailedCsv: _isExportingDetailedCsv,
                 isExportingSnapshot: _isExportingSnapshot,
+                latestArtifact: _latestExportArtifact,
+                isSharing: _isSharingExport,
+                onShareLatest: _latestExportArtifact == null || _isSharingExport
+                    ? null
+                    : _shareLatestExport,
               ),
               const SizedBox(height: 12),
               if (_isLoading)
@@ -360,6 +428,10 @@ class _HomePageState extends State<HomePage> {
   Future<void> _runSearch(String rawQuery) async {
     _enrichmentTimer?.cancel();
     await widget.searchOrchestrator.cancelEnrichment(_searchState.query);
+    if (_hasAdvancedFilters) {
+      await _runAdvancedSearch(rawQuery);
+      return;
+    }
     setState(() {
       _isLoading = true;
       _enrichmentState = EnrichmentQueueState.idle();
@@ -382,12 +454,89 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  bool get _hasAdvancedFilters {
+    return _countryFilterController.text.trim().isNotEmpty ||
+        _sourceFilterController.text.trim().isNotEmpty ||
+        _categoryFilterController.text.trim().isNotEmpty ||
+        _selectedNutrientPreset != null ||
+        _nutrientMinController.text.trim().isNotEmpty ||
+        _nutrientMaxController.text.trim().isNotEmpty;
+  }
+
+  Future<void> _runAdvancedSearch(String rawQuery) async {
+    setState(() {
+      _isLoading = true;
+      _enrichmentState = EnrichmentQueueState.idle();
+    });
+    final query = _advancedQuery(rawQuery);
+    final results = await widget.repository.searchFoodsAdvanced(query);
+    final importLogs = await widget.repository.getImportLogs(limit: 10);
+    final count = await widget.repository.countFoods();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _searchState = SearchSessionState(
+        query: rawQuery.trim(),
+        localResults: results,
+        foregroundFetchedResults: const [],
+        combinedResults: results,
+        status: SearchStatus.local,
+        activeSources: const [],
+        message: 'Advanced local filters applied.',
+      );
+      _results = results;
+      _importLogs = importLogs;
+      _foodCount = count;
+      _isLoading = false;
+    });
+  }
+
+  FoodSearchQuery _advancedQuery(String rawQuery) {
+    final preset = _selectedNutrientPreset;
+    final ranges = <NutrientRangeFilter>[
+      if (preset != null)
+        NutrientRangeFilter(
+          canonicalLabel: preset.canonicalLabel,
+          unit: preset.unit,
+          min: double.tryParse(_nutrientMinController.text.trim()),
+          max: double.tryParse(_nutrientMaxController.text.trim()),
+        ),
+    ];
+    return FoodSearchQuery(
+      text: rawQuery.trim(),
+      countries: _splitFilter(_countryFilterController.text),
+      importerIds: _splitFilter(_sourceFilterController.text),
+      categories: _splitFilter(_categoryFilterController.text),
+      nutrientRanges: ranges,
+    );
+  }
+
+  List<String> _splitFilter(String value) {
+    return value
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  void _clearAdvancedFilters() {
+    setState(() {
+      _countryFilterController.clear();
+      _sourceFilterController.clear();
+      _categoryFilterController.clear();
+      _nutrientMinController.clear();
+      _nutrientMaxController.clear();
+      _selectedNutrientPreset = null;
+    });
+  }
+
   String _searchStatusText() {
     switch (_searchState.status) {
       case SearchStatus.idle:
         return 'Submit a query to search local data and trigger controlled official fetches.';
       case SearchStatus.local:
-        return 'Local results ready';
+        return _searchState.message ?? 'Local results ready';
       case SearchStatus.fetching:
         return 'Fetching official data';
       case SearchStatus.archived:
@@ -518,6 +667,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       setState(() {
+        _latestExportArtifact = artifact;
         _exportStatusMessage =
             'Exported ${artifact.recordCount} records to ${artifact.path}';
       });
@@ -532,6 +682,39 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           setLoading(false);
+        });
+      }
+    }
+  }
+
+  Future<void> _shareLatestExport() async {
+    final artifact = _latestExportArtifact;
+    if (artifact == null) {
+      return;
+    }
+    setState(() {
+      _isSharingExport = true;
+      _exportStatusMessage = null;
+    });
+    try {
+      await widget.exportShareService.shareFile(artifact.path);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _exportStatusMessage = 'Share sheet opened for ${artifact.path}';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _exportStatusMessage = 'Share failed: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSharingExport = false;
         });
       }
     }
@@ -647,6 +830,9 @@ class ExportCard extends StatelessWidget {
     required this.isExportingSummaryJson,
     required this.isExportingDetailedCsv,
     required this.isExportingSnapshot,
+    required this.latestArtifact,
+    required this.isSharing,
+    required this.onShareLatest,
   });
 
   final VoidCallback? onExportSummaryJson;
@@ -655,6 +841,9 @@ class ExportCard extends StatelessWidget {
   final bool isExportingSummaryJson;
   final bool isExportingDetailedCsv;
   final bool isExportingSnapshot;
+  final ExportArtifact? latestArtifact;
+  final bool isSharing;
+  final VoidCallback? onShareLatest;
 
   @override
   Widget build(BuildContext context) {
@@ -712,10 +901,157 @@ class ExportCard extends StatelessWidget {
                       : const Icon(Icons.save_outlined),
                   label: const Text('Export SQLite snapshot'),
                 ),
+                OutlinedButton.icon(
+                  onPressed: onShareLatest,
+                  icon: isSharing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.ios_share_outlined),
+                  label: const Text('Share latest export'),
+                ),
               ],
             ),
+            if (latestArtifact != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Latest: ${latestArtifact!.recordCount} records at ${latestArtifact!.path}',
+              ),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _AdvancedFiltersCard extends StatelessWidget {
+  const _AdvancedFiltersCard({
+    required this.expanded,
+    required this.selectedPreset,
+    required this.countryController,
+    required this.sourceController,
+    required this.categoryController,
+    required this.minController,
+    required this.maxController,
+    required this.onToggle,
+    required this.onPresetChanged,
+    required this.onApply,
+    required this.onClear,
+  });
+
+  final bool expanded;
+  final NutrientPreset? selectedPreset;
+  final TextEditingController countryController;
+  final TextEditingController sourceController;
+  final TextEditingController categoryController;
+  final TextEditingController minController;
+  final TextEditingController maxController;
+  final VoidCallback onToggle;
+  final ValueChanged<NutrientPreset?> onPresetChanged;
+  final VoidCallback onApply;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.tune),
+            title: const Text('Advanced filters'),
+            subtitle: const Text(
+              'Local-only source, country, category, and nutrient range search.',
+            ),
+            trailing: Icon(expanded ? Icons.expand_less : Icons.expand_more),
+            onTap: onToggle,
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: countryController,
+                    decoration: const InputDecoration(
+                      labelText: 'Country filter',
+                      hintText: 'e.g. Canada, Japan',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: sourceController,
+                    decoration: const InputDecoration(
+                      labelText: 'Source/importer filter',
+                      hintText: 'e.g. canada-cnf, usda',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: categoryController,
+                    decoration: const InputDecoration(
+                      labelText: 'Category filter',
+                      hintText: 'e.g. fish, cereal',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<NutrientPreset>(
+                    initialValue: selectedPreset,
+                    decoration: const InputDecoration(
+                      labelText: 'Nutrient preset',
+                    ),
+                    items: nutrientSearchPresets
+                        .map(
+                          (preset) => DropdownMenuItem(
+                            value: preset,
+                            child: Text('${preset.label} (${preset.unit})'),
+                          ),
+                        )
+                        .toList(growable: false),
+                    onChanged: onPresetChanged,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: minController,
+                          decoration: const InputDecoration(labelText: 'Min'),
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: maxController,
+                          decoration: const InputDecoration(labelText: 'Max'),
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 12,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: onApply,
+                        icon: const Icon(Icons.filter_alt_outlined),
+                        label: const Text('Apply filters'),
+                      ),
+                      TextButton.icon(
+                        onPressed: onClear,
+                        icon: const Icon(Icons.clear),
+                        label: const Text('Clear filters'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1197,6 +1533,45 @@ class FoodDetailSheet extends StatelessWidget {
                       ),
                     );
                   }).toList(),
+                ),
+              ),
+            ),
+          const SizedBox(height: 16),
+          Text(
+            'Nutrient source comparison',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (details.nutrientComparisons.isEmpty)
+            const Card(
+              child: ListTile(
+                title: Text('No source-level nutrient observations available'),
+              ),
+            )
+          else
+            ...details.nutrientComparisons.map(
+              (comparison) => Card(
+                child: ExpansionTile(
+                  title: Text(comparison.canonicalLabel),
+                  subtitle: Text(
+                    'Snapshot: ${comparison.aggregated == null ? '(missing)' : '${comparison.aggregated!.amount} ${comparison.aggregated!.unit}'} • ${comparison.varianceStatus.name}',
+                  ),
+                  children: comparison.observations.isEmpty
+                      ? const [ListTile(title: Text('No source observations'))]
+                      : comparison.observations
+                            .map(
+                              (observation) => ListTile(
+                                title: Text(
+                                  '${observation.amount} ${observation.unit}',
+                                ),
+                                subtitle: Text(
+                                  '${observation.sourceName} • ${observation.country}',
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
                 ),
               ),
             ),

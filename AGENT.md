@@ -86,6 +86,8 @@ The app is not intended to ship with a full world database preloaded. It is inte
 - France CIQUAL 2025 Excel importer
 - Denmark Frida spreadsheet importer
 - Australia AFCD multi-file Excel importer
+- Germany BLS 4.0 Excel importer
+- Italy CREA web portal importer
 
 ### Official Dataset Grabber Layer
 
@@ -267,7 +269,12 @@ The app is not intended to ship with a full world database preloaded. It is inte
 - Added importer parser and sync-flow tests for Switzerland, France, Denmark, and Australia
 - Added scaffold tests for the importer queue/template layer
 - Reviewed New Zealand FOODfiles Terms of Use and marked the NZ importer as blocked for the current architecture because the data must be presented in original and unaltered form
-- Advanced the actionable importer queue beyond CH/AU/FR/DK to the next non-blocked source
+- Integrated Germany BLS 4.0 importer and Italy CREA web portal importer from the recent automation work
+- Germany BLS reads the official workbook layout from a user-provided `.xlsx` path
+- Italy CREA imports live search/detail records from the official AlimentiNUTrizione portal
+- Added and verified Germany/Italy importer parser and sync-flow tests
+- Marked Finland Fineli as blocked because the official open-data URL currently redirects to THL maintenance, preventing verification of the CSV package and current license path
+- Advanced the actionable importer queue beyond CH/AU/FR/DK/DE/IT; remaining queued sources are blocked pending source-shape or license/product decisions
 
 ### Phase K: Export Layer
 
@@ -292,6 +299,145 @@ The app is not intended to ship with a full world database preloaded. It is inte
 - Export results now surface file path and record count in the UI.
 - Export files are written into the app document directory under `exports/`.
 
+### Phase M/P: Budget Governance And Operations Surface
+
+- Added source capability governance:
+  - `SourceCapabilityRegistry`
+  - `SourceRoutingService`
+- Automatic search-time routing is now constrained by source capability metadata instead of only hardcoded planner order.
+- First automatic route remains limited to:
+  - `usda`
+  - `canada-cnf`
+  - `uk-mccance`
+  - `jp-standard`
+- Switzerland, Australia, France, Denmark, Germany, Italy, Spain, and Finland remain outside automatic foreground/background routing unless a later phase explicitly enables them.
+- New Zealand FOODfiles is now surfaced as `Blocked` rather than merely cataloged.
+- Spain BEDCA is now surfaced as `Blocked` because the queued `single_excel` shape does not match the official public web/database access path and BEDCA reuse conditions require attribution plus preservation of original meaning.
+- Finland Fineli is now surfaced as `Blocked` because the official open-data URL currently redirects to THL maintenance, so the CSV package and current license path cannot be verified.
+- Added `StorageBudgetManager` with first-pass default budgets:
+  - database: `512MB`
+  - dataset artifacts: `2GB`
+  - exports: `1GB`
+  - cache/prepared downloads: `512MB`
+- Added `ModelBudgetController` for Ollama query expansion:
+  - maximum `6` calls per minute
+  - `3s` timeout policy
+  - `256` max predicted tokens
+  - cooldown after model failures
+  - fallback logging when the model is unavailable or budget-denied
+- Extended repository operations support:
+  - fetch job filtering by importer/status/phase/query
+  - dataset artifact listing
+  - artifact soft removal
+  - storage path discovery
+- Added an independent Operations page with:
+  - fetch job inspection and retry for eligible automatic sources
+  - dataset artifact inspection, soft removal, and re-prepare action
+  - importer diagnostics
+  - storage and model budget status
+- Artifact removal is intentionally soft-delete only. Local files are not deleted.
+
+### Phase O/P2: Data Quality Review And Observation-Level Search
+
+- Added read-only data quality review support:
+  - `MergeReviewIssue`
+  - `MergeReviewIssueType`
+  - `MergeReviewSeverity`
+  - repository `getMergeReviewIssues`
+- Operations page now includes `Data quality review` for:
+  - low-confidence canonical reuse
+  - category-conflict candidates
+  - created canonical records that had rejected candidates
+  - multi-source nutrient variance
+- Added advanced local search models:
+  - `FoodSearchQuery`
+  - `FoodSearchFilters`-style fields through query lists
+  - `NutrientRangeFilter`
+  - nutrient presets for protein, sodium, energy, fat, carbohydrate, and fiber
+- Added repository advanced search interfaces:
+  - `searchFoodsAdvanced`
+  - `searchFoodSummariesAdvanced`
+- Advanced search is local-only and does not trigger foreground fetch or background enrichment.
+- Home page now has an `Advanced filters` panel for:
+  - country
+  - source/importer id
+  - category
+  - nutrient preset
+  - min/max nutrient range
+- Detail DTOs and `FoodDetailSheet` now expose `Nutrient source comparison` with:
+  - aggregated snapshot value
+  - per-source observation values
+  - source name and country
+  - variance status
+- Alias and multilingual-friendly matching is strengthened by reusing normalization toolkit alias keys across advanced local search.
+
+### Phase Q: Manual Data Governance Writeback
+
+- Added controlled manual governance writeback for review issues.
+- Added repository interfaces for:
+  - manual source-record merge into an existing canonical food
+  - manual source-record split into a new canonical food
+  - manual canonical field override
+  - manual governance log reads
+- Added SQLite persistence for manual governance:
+  - `manual_governance_log`
+  - `manual_canonical_override`
+- Manual merge/split actions update provenance ownership, refresh canonical snapshots, and write source-level merge audit entries with `matched_by='manual-governance'`.
+- Manual canonical overrides are reapplied during snapshot refresh so later imports do not immediately erase curated display/category/country/description/serving fields.
+- Operations `Data quality review` issue cards now expose manual actions:
+  - merge suggested candidate
+  - split source record
+  - override canonical fields
+  - open detail sheet
+- Operations now includes a `Manual governance log` section for recent human actions.
+- Memory and SQLite repositories both implement the writeback surface for tests and runtime parity.
+
+### Phase N/R: AI Cautious Expansion And Production Engineering
+
+- Added Settings persistence through SQLite `app_meta`:
+  - `AppSettings`
+  - `SettingsService`
+  - configurable Ollama endpoint/model
+  - configurable model call budget, timeout, and max tokens
+  - configurable storage budgets
+  - configurable export directory
+  - source enabled/disabled map with blocked sources forced disabled
+- Added a Settings page accessible from Home and Operations.
+- `main.dart` now constructs Ollama, model budget, storage budget, export service, and automatic source routing from persisted settings.
+- Added cautious AI suggestion services:
+  - `SourceRoutingSuggestionService`
+  - `MergeCandidateExplanationService`
+  - `ExportSummaryService`
+- AI suggestions remain non-authoritative:
+  - no AI nutrient facts
+  - no AI canonical-field overwrite
+  - no AI merge decisions
+  - all AI outputs continue to be logged in `ai_suggestion_log`
+- Added persistent export history:
+  - `export_history`
+  - JSON/CSV/SQLite snapshot exports record path, format, detail level, record count, scope, status, and summary
+- Added `share_plus`-backed export file sharing through `ExportShareService`.
+- Home export card now exposes the latest export and Share action.
+- Operations page now includes an Export history section.
+- Added GitHub Actions CI:
+  - `flutter analyze`
+  - `flutter test`
+  - targeted source importer tests
+  - `flutter build web`
+  - Web build artifact upload
+- Added release packaging notes in `docs/release_packaging.md`.
+
+### Public Repository Preparation
+
+- Rewrote the public `README.md` in English for GitHub publication.
+- Added repository governance and legal boundary files:
+  - `LICENSE`
+  - `NOTICE`
+  - `CONTRIBUTING.md`
+  - `SECURITY.md`
+  - `CODE_OF_CONDUCT.md`
+- The repository license covers project source code only. Official nutrition datasets, downloaded artifacts, trademarks, and source database rights remain governed by their respective official source terms.
+
 ## Current User-Facing Capabilities
 
 - Local nutrition search
@@ -302,17 +448,29 @@ The app is not intended to ship with a full world database preloaded. It is inte
 - Canonical search result deduplication across sources already merged
 - Local persistence of imported data
 - Merge audit explanation for each source record in detail view
+- Operations data quality review
+- Manual merge/split/override writeback from review issues
+- Manual governance action log
+- Advanced local filters and nutrient range search
+- Nutrient source comparison in details
 - Local JSON / CSV export
 - Local SQLite snapshot export
+- Settings page for model, storage, export, and source controls
+- Export history and system share entry
+- GitHub CI and Web artifact build workflow
+- English public repository documentation and code-license boundary files
 
 ## Current Known Boundaries
 
-- Canonical merge is deterministic only. No AI merge or manual merge review UI exists yet.
+- Canonical merge is deterministic by default. Manual merge/split/override writeback now exists, but AI still cannot make merge decisions.
 - Background enrichment is session-local only. It does not survive app restart.
-- Export history, system share sheet, custom directory selection, and remote upload exports are not implemented yet.
-- Observation-level search is not implemented yet.
+- Remote upload exports are not implemented.
 - New Zealand is grabber-ready but blocked by source terms.
-- Germany, Italy, Spain, and Finland remain cataloged but not imported.
+- Spain is blocked pending web/API and license review, and Finland is blocked while the official Fineli open-data path is under maintenance.
+- Operations page is inspection-first. It does not include destructive cleanup.
+- Manual governance is first-pass writeback only. It does not yet include undo/redo, batch approval, role-based authorization, or a dedicated conflict resolution workspace.
+- Advanced nutrient filtering is local-only and does not trigger proactive source fetching.
+- Settings changes that affect already-constructed runtime services are applied on next app start in the first implementation.
 
 ## Verification Status At Last Update
 
@@ -343,26 +501,66 @@ The latest completed verification after Phase L Denmark expansion was:
 - `flutter test test/domain/source_importers_test.dart` passed
 - `flutter test` passed
 
+The latest completed verification after Phase M/P budget and operations work was:
+
+- `flutter analyze` passed
+- `flutter test` passed
+
+The latest completed verification after Phase O/P2 data quality and observation search work was:
+
+- `flutter analyze` passed
+- `flutter test` passed
+
+The latest completed verification after Phase N/R AI cautious expansion and production engineering work was:
+
+- `flutter analyze` passed
+- `flutter test` passed
+- `flutter test test/domain/source_importers_test.dart` passed
+- `flutter build web` passed
+
+The latest completed verification after Phase Q manual data governance writeback was:
+
+- `flutter analyze` passed
+- `flutter test test/domain/manual_governance_test.dart test/operations_page_test.dart` passed
+- `flutter test` passed
+- `flutter build web` passed
+
+The latest completed repository publication preparation was:
+
+- English `README.md` rewrite completed
+- `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md` added
+- pending final publish-time validation and GitHub push
+
 ## Next Recommended Focus
 
 The next technically coherent phase is:
 
-- more importer coverage, starting with Germany
+- manual governance hardening
 
 After that:
 
-- export layer
-- more importer coverage
-- AI-assisted but non-authoritative review flows
+- governance undo/history detail and safer confirmation flows
+- batch review queues and saved review filters
+- AI-assisted but non-authoritative review explanations
 
 ## Files That Matter Most Right Now
 
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/search_orchestrator.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/background_enrichment_queue.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/canonical_merge_service.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/source_capability_registry.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/source_routing_service.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/storage_budget_manager.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/model_budget_controller.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/settings_service.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/ai_assist_services.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/domain/food_quality_service.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/data/sqlite_food_repository.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/data/memory_food_repository.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/models/manual_governance.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/features/home/home_page.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/features/operations/operations_page.dart`
+- `/Users/zhouzhenghang/Desktop/DataHookClaws/lib/src/features/settings/settings_page.dart`
 - `/Users/zhouzhenghang/Desktop/DataHookClaws/docs/PROJECT_PLAN.md`
 
 ## Update Log
@@ -397,3 +595,24 @@ After that:
 - Kept Denmark auto-download disabled because official dataset links are sent via the Frida form
 - Added Denmark importer parser and sync-flow tests
 - Marked Denmark as integrated and advanced the queue target to Germany
+- Integrated Germany BLS 4.0 importer wiring and parser from the automation work
+- Integrated the Italy CREA importer against the official AlimentiNUTrizione HTML search/detail portal
+- Removed Germany scaffold placeholder leftovers after real source importer coverage was added to `source_importers_test.dart`
+- Fixed Italy importer mocked response encoding so UTF-8 nutrient labels and units are testable
+- Marked Germany and Italy queue items completed
+- Implemented Phase M/P budget governance and operations surface
+- Added source capability routing, storage/model budget controls, Operations page, artifact soft removal, and job retry support
+- Marked New Zealand as explicitly blocked in source status and operations diagnostics
+- Verified with `flutter analyze` and `flutter test`
+- Implemented Phase O/P2 data quality review and observation-level search
+- Added advanced local filters, nutrient range search, review issue derivation, and detail nutrient source comparison
+- Verified with `flutter analyze` and `flutter test`
+- Implemented Phase N/R AI cautious expansion and production engineering
+- Added Settings persistence/page, source enable controls, export history, share support, cautious AI suggestion services, CI workflow, and release packaging notes
+- Verified with `flutter analyze`, `flutter test`, targeted importer tests, and `flutter build web`
+- Integrated the recent worktree automation outputs for Germany and Italy
+- Verified with `flutter analyze`, `flutter test test/domain/source_importers_test.dart test/domain/it_crea_importer_test.dart`, `flutter test`, and `flutter build web`
+- Implemented Phase Q manual data governance writeback
+- Added manual source-record merge, source-record split, canonical override, manual governance logs, and Operations review actions
+- Verified with `flutter analyze`, `flutter test test/domain/manual_governance_test.dart test/operations_page_test.dart`, `flutter test`, and `flutter build web`
+- Prepared GitHub publication materials in English and added source-code license/governance files

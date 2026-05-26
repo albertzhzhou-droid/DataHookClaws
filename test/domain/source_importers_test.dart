@@ -4,6 +4,7 @@ import 'package:data_hook_claws/src/data/memory_food_repository.dart';
 import 'package:data_hook_claws/src/domain/normalization/food_record_normalizer.dart';
 import 'package:data_hook_claws/src/domain/sync_food_catalog_use_case.dart';
 import 'package:data_hook_claws/src/importers/australia_afcd_importer.dart';
+import 'package:data_hook_claws/src/importers/de_bls_importer.dart';
 import 'package:data_hook_claws/src/importers/denmark_frida_excel_importer.dart';
 import 'package:data_hook_claws/src/importers/france_ciqual_excel_importer.dart';
 import 'package:data_hook_claws/src/importers/swiss_food_composition_excel_importer.dart';
@@ -317,6 +318,144 @@ void main() {
       expect(results.single.country, 'Denmark');
     });
   });
+
+  group('DeBlsImporter', () {
+    test('parses the documented BLS 4.0 triplet column layout', () async {
+      final tempDir = await Directory.systemTemp.createTemp('bls-importer');
+      addTearDown(() async {
+        if (tempDir.existsSync()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final workbookPath = p.join(tempDir.path, 'bls.xlsx');
+      await _writeBlsWorkbook(workbookPath);
+
+      final importer = DeBlsImporter();
+      final foods = await importer.importFoods(
+        ImportRequest(query: 'oat', limit: 10, datasetPath: workbookPath),
+      );
+
+      expect(foods, hasLength(1));
+      expect(foods.single.sourceRecordId, 'C131000');
+      expect(foods.single.name, 'Hafer ganzes Korn, roh');
+      expect(foods.single.category, 'BLS group C');
+      final protein = foods.single.nutrients.firstWhere(
+        (nutrient) => nutrient.label == 'Protein',
+      );
+      final vitaminC = foods.single.nutrients.firstWhere(
+        (nutrient) => nutrient.label == 'Vitamin C',
+      );
+      expect(protein.amount, 13.2);
+      expect(vitaminC.amount, 0);
+    });
+
+    test('runs through sync use case and persists normalized result', () async {
+      final tempDir = await Directory.systemTemp.createTemp('bls-sync');
+      addTearDown(() async {
+        if (tempDir.existsSync()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final workbookPath = p.join(tempDir.path, 'bls.xlsx');
+      await _writeBlsWorkbook(workbookPath);
+
+      final repository = MemoryFoodRepository();
+      final useCase = SyncFoodCatalogUseCase(
+        repository: repository,
+        importers: [DeBlsImporter()],
+        normalizer: const FoodRecordNormalizer(),
+      );
+
+      final summary = await useCase.syncSource(
+        importerId: 'de-bls',
+        request: ImportRequest(
+          query: 'hafer',
+          limit: 10,
+          datasetPath: workbookPath,
+        ),
+      );
+
+      final results = await repository.searchFoods('hafer');
+      expect(summary.importedCount, 1);
+      expect(results.single.country, 'Germany');
+    });
+  });
+}
+
+Future<void> _writeBlsWorkbook(String path) async {
+  final excel = Excel.createExcel();
+  excel.rename('Sheet1', 'BLS 4.0');
+  _writeRow(excel, 'BLS 4.0', 0, const ['BLS 4.0 Hauptdatei']);
+  _writeRow(excel, 'BLS 4.0', 1, const ['']);
+  _writeRow(excel, 'BLS 4.0', 2, [
+    'BLS Code',
+    'Lebensmittelbezeichnung',
+    'Food name',
+    'ENERCJ Energie (Kilojoule) [kJ/100g]',
+    'ENERCJ Datenherkunft',
+    'ENERCJ Referenz',
+    'ENERCC Energie (Kilokalorien) [kcal/100g]',
+    'ENERCC Datenherkunft',
+    'ENERCC Referenz',
+    'WATER Wasser [g/100g]',
+    'WATER Datenherkunft',
+    'WATER Referenz',
+    'PROT625 Protein (Nx6,25) [g/100g]',
+    'PROT625 Datenherkunft',
+    'PROT625 Referenz',
+    'FAT Fett [g/100g]',
+    'FAT Datenherkunft',
+    'FAT Referenz',
+    'CHO Kohlenhydrate, verfügbar [g/100g]',
+    'CHO Datenherkunft',
+    'CHO Referenz',
+    'FIBT Ballaststoffe, gesamt [g/100g]',
+    'FIBT Datenherkunft',
+    'FIBT Referenz',
+    'NA Natrium [mg/100g]',
+    'NA Datenherkunft',
+    'NA Referenz',
+    'VITC Vitamin C-Ascorbinsäure [mg/100g]',
+    'VITC Datenherkunft',
+    'VITC Referenz',
+  ]);
+  _writeRow(excel, 'BLS 4.0', 3, [
+    'C131000',
+    'Hafer ganzes Korn, roh',
+    'Oats, whole grain, raw',
+    1563,
+    'lab',
+    'MRI',
+    371,
+    'calc',
+    'MRI',
+    10.2,
+    'lab',
+    'MRI',
+    13.2,
+    'lab',
+    'MRI',
+    7.0,
+    'lab',
+    'MRI',
+    58.7,
+    'calc',
+    'MRI',
+    10.0,
+    'calc',
+    'MRI',
+    3,
+    'lab',
+    'MRI',
+    0,
+    'lab',
+    'MRI',
+  ]);
+
+  final bytes = excel.encode()!;
+  await File(path).writeAsBytes(bytes, flush: true);
 }
 
 Future<void> _writeSwissWorkbook(String path) async {

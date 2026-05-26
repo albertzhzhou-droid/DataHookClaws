@@ -1,8 +1,10 @@
 import '../importers/australia_afcd_importer.dart';
 import '../importers/canada_cnf_csv_importer.dart';
+import '../importers/de_bls_importer.dart';
 import '../importers/denmark_frida_excel_importer.dart';
 import '../importers/food_importer.dart';
 import '../importers/france_ciqual_excel_importer.dart';
+import '../importers/it_crea_importer.dart';
 import '../importers/japan_standard_food_excel_importer.dart';
 import '../importers/swiss_food_composition_excel_importer.dart';
 import '../importers/uk_cofid_excel_importer.dart';
@@ -173,6 +175,40 @@ const importerDescriptors = <ImporterDescriptor>[
     isIntegrated: true,
   ),
   ImporterDescriptor(
+    importerId: 'de-bls',
+    displayName: 'Germany BLS 4.0',
+    country: 'Germany',
+    inputKind: ImporterInputKind.singleFile,
+    description:
+        'Imports the official BLS 4.0 workbook from the Max Rubner-Institut. Provide the downloaded main .xlsx workbook path.',
+    buttonLabel: 'Import Germany BLS',
+    queryLabel: 'Optional food filter',
+    queryHint: 'Import only matching German foods',
+    pathLabel: 'Workbook path',
+    pathHint: '/path/to/BLS_4_0_Daten_2025_DE.xlsx',
+    supportsAutoGrab: false,
+    defaultLimit: 20,
+    isIntegrated: true,
+  ),
+  ImporterDescriptor(
+    importerId: 'it-crea',
+    displayName: 'Italy CREA 2019',
+    country: 'Italy',
+    inputKind: ImporterInputKind.api,
+    description:
+        'Live import from the official CREA / AlimentiNUTrizione food-composition portal. Enter a food query and the importer fetches matching official detail pages.',
+    buttonLabel: 'Import Italy CREA',
+    queryLabel: 'Food query',
+    queryHint: 'e.g. pane, salmone, yogurt',
+    pathLabel: '',
+    pathHint: '',
+    supportsAutoGrab: false,
+    defaultLimit: 10,
+    isIntegrated: true,
+    defaultQuery: 'pane',
+    supportsDatasetPath: false,
+  ),
+  ImporterDescriptor(
     importerId: 'au-afcd',
     displayName: 'Australia AFCD',
     country: 'Australia',
@@ -199,6 +235,8 @@ List<FoodImporter> buildIntegratedImporters() {
     SwissFoodCompositionExcelImporter(),
     FranceCiqualExcelImporter(),
     DenmarkFridaExcelImporter(),
+    DeBlsImporter(),
+    ItCreaImporter(),
     AustraliaAfcdImporter(),
   ];
 }

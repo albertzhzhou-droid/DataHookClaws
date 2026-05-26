@@ -1,0 +1,41 @@
+name: Flutter CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  analyze-test-web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Source importer tests
+        run: flutter test test/domain/source_importers_test.dart test/domain/it_crea_importer_test.dart
+
+      - name: Build web artifact
+        run: flutter build web
+
+      - name: Upload web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: datahookclaws-web
+          path: build/web

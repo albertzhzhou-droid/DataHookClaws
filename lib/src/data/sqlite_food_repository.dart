@@ -5,16 +5,23 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../api/export_models.dart';
 import '../domain/canonical_merge_service.dart';
+import '../domain/food_quality_service.dart';
 import '../domain/normalization/text_normalizer.dart';
 import '../models/ai_suggestion_log_entry.dart';
 import '../models/dataset_artifact_entry.dart';
+import '../models/export_history_entry.dart';
 import '../models/fetch_job_entry.dart';
 import '../models/food_details.dart';
+import '../models/food_search_query.dart';
 import '../models/food_item.dart';
 import '../models/food_summary.dart';
 import '../models/import_log_entry.dart';
+import '../models/manual_governance.dart';
+import '../models/merge_review_issue.dart';
 import '../models/nutrient.dart';
+import '../models/storage_paths.dart';
 import 'food_repository.dart';
 
 typedef DocumentsDirectoryResolver = Future<Directory> Function();
@@ -31,6 +38,7 @@ class SqliteFoodRepository implements FoodRepository {
   final String _databaseFileName;
   final TextNormalizer _textNormalizer = const TextNormalizer();
   final CanonicalMergeService _mergeService = const CanonicalMergeService();
+  final FoodQualityService _qualityService = FoodQualityService();
 
   Database? _database;
   String? _databasePath;
@@ -52,11 +60,13 @@ class SqliteFoodRepository implements FoodRepository {
 
     _database = await openDatabase(
       databasePath,
-      version: 5,
+      version: 7,
       onCreate: (db, version) async {
         await _createLegacyTables(db);
         await _createProvenanceTables(db);
         await _createAppMetaTable(db);
+        await _createExportHistoryTable(db);
+        await _createManualGovernanceTables(db);
         await _setCanonicalMergeVersion(db, 1);
         await _setMergeAuditVersion(db, 1);
       },
@@ -74,8 +84,16 @@ class SqliteFoodRepository implements FoodRepository {
         if (oldVersion < 5) {
           await _createMergeAuditTables(db);
         }
+        if (oldVersion < 6) {
+          await _createExportHistoryTable(db);
+        }
+        if (oldVersion < 7) {
+          await _createManualGovernanceTables(db);
+        }
       },
       onOpen: (db) async {
+        await _createExportHistoryTable(db);
+        await _createManualGovernanceTables(db);
         await _backfillProvenanceTables(db);
         await _ensureCanonicalMergeState(db);
         await _ensureMergeAuditState(db);
@@ -126,6 +144,61 @@ class SqliteFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<List<FoodItem>> searchFoodsAdvanced(
+    FoodSearchQuery query, {
+    int limit = 100,
+  }) async {
+    final candidates = await _candidateFoodsForAdvancedSearch(query);
+    final matched = <FoodItem>[];
+    for (final item in candidates) {
+      final details = await getFoodDetails(item.id);
+      if (_qualityService.matchesAdvancedQuery(
+        item: item,
+        details: details,
+        query: query,
+      )) {
+        matched.add(item);
+      }
+      if (matched.length >= limit) {
+        break;
+      }
+    }
+    return matched;
+  }
+
+  Future<List<FoodItem>> _candidateFoodsForAdvancedSearch(
+    FoodSearchQuery query,
+  ) async {
+    if (query.text.trim().isEmpty) {
+      return getAllFoods();
+    }
+    final normalizedQuery = _textNormalizer
+        .aliasKey(query.text)
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim()
+        .toLowerCase();
+    final like = '%$normalizedQuery%';
+    final rows = await _db.rawQuery('''
+      SELECT DISTINCT f.*
+      FROM foods f
+      LEFT JOIN food_tags t ON t.food_id = f.id
+      LEFT JOIN food_alias a ON a.canonical_food_id = f.id
+      LEFT JOIN source_record s ON s.canonical_food_id = f.id
+      WHERE lower(f.name) LIKE ?
+         OR lower(f.category) LIKE ?
+         OR lower(f.country) LIKE ?
+         OR lower(f.source_name) LIKE ?
+         OR lower(f.description) LIKE ?
+         OR lower(IFNULL(t.tag, '')) LIKE ?
+         OR lower(IFNULL(a.alias, '')) LIKE ?
+         OR lower(IFNULL(s.record_title, '')) LIKE ?
+         OR lower(IFNULL(s.record_description, '')) LIKE ?
+      ORDER BY f.name COLLATE NOCASE ASC
+      ''', List<String>.filled(9, like));
+    return _hydrateFoods(rows);
+  }
+
+  @override
   Future<List<FoodSummary>> searchFoodSummaries(
     String query, {
     int limit = 20,
@@ -146,6 +219,15 @@ class SqliteFoodRepository implements FoodRepository {
           ),
         )
         .toList(growable: false);
+  }
+
+  @override
+  Future<List<FoodSummary>> searchFoodSummariesAdvanced(
+    FoodSearchQuery query, {
+    int limit = 100,
+  }) async {
+    final items = await searchFoodsAdvanced(query, limit: limit);
+    return items.map(_qualityService.summaryFromItem).toList(growable: false);
   }
 
   @override
@@ -283,6 +365,173 @@ class SqliteFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<List<MergeReviewIssue>> getMergeReviewIssues({int limit = 100}) async {
+    final foods = await getAllFoods();
+    final issues = <MergeReviewIssue>[];
+    for (final food in foods) {
+      final details = await getFoodDetails(food.id);
+      if (details == null) {
+        continue;
+      }
+      issues.addAll(_qualityService.reviewIssuesForDetails(details));
+    }
+    issues.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    return issues.take(limit).toList(growable: false);
+  }
+
+  @override
+  Future<void> mergeSourceRecord({
+    required String sourceRecordId,
+    required String targetCanonicalFoodId,
+    required String note,
+  }) async {
+    await _db.transaction((txn) async {
+      final source = await _sourceRecordById(txn, sourceRecordId);
+      if (source == null) {
+        throw StateError('Source record not found: $sourceRecordId');
+      }
+      final targetRows = await txn.query(
+        'canonical_food',
+        where: 'id = ?',
+        whereArgs: [targetCanonicalFoodId],
+        limit: 1,
+      );
+      if (targetRows.isEmpty) {
+        throw StateError(
+          'Target canonical food not found: $targetCanonicalFoodId',
+        );
+      }
+      final fromCanonicalId = source['canonical_food_id']! as String;
+      if (fromCanonicalId == targetCanonicalFoodId) {
+        return;
+      }
+      await txn.update(
+        'source_record',
+        {'canonical_food_id': targetCanonicalFoodId},
+        where: 'id = ?',
+        whereArgs: [sourceRecordId],
+      );
+      await _upsertAliasForSource(txn, targetCanonicalFoodId, source);
+      await _upsertManualMergeAudit(
+        txn,
+        sourceRecordId: sourceRecordId,
+        canonicalId: targetCanonicalFoodId,
+        action: 'reuse',
+        reason: note,
+      );
+      await _recordManualGovernance(
+        txn,
+        action: 'merge',
+        sourceRecordId: sourceRecordId,
+        fromCanonicalFoodId: fromCanonicalId,
+        toCanonicalFoodId: targetCanonicalFoodId,
+        note: note,
+      );
+      await _refreshCanonicalSnapshot(txn, targetCanonicalFoodId);
+      await _cleanupOrRefreshCanonical(txn, fromCanonicalId);
+    });
+  }
+
+  @override
+  Future<void> splitSourceRecord({
+    required String sourceRecordId,
+    required String note,
+  }) async {
+    await _db.transaction((txn) async {
+      final source = await _sourceRecordById(txn, sourceRecordId);
+      if (source == null) {
+        throw StateError('Source record not found: $sourceRecordId');
+      }
+      final fromCanonicalId = source['canonical_food_id']! as String;
+      final fromCanonical = await _canonicalById(txn, fromCanonicalId);
+      if (fromCanonical == null) {
+        throw StateError('Canonical food not found: $fromCanonicalId');
+      }
+      final newCanonicalId = 'manual-split:$sourceRecordId';
+      await txn.insert('canonical_food', {
+        'id': newCanonicalId,
+        'display_name': source['record_title']! as String,
+        'canonical_category': fromCanonical['canonical_category']! as String,
+        'canonical_country_hint': source['country']! as String,
+        'description': source['record_description']! as String,
+        'serving_basis': fromCanonical['serving_basis']! as String,
+        'last_aggregated_at': DateTime.now().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'source_record',
+        {'canonical_food_id': newCanonicalId},
+        where: 'id = ?',
+        whereArgs: [sourceRecordId],
+      );
+      await _upsertAliasForSource(txn, newCanonicalId, source);
+      await _upsertManualMergeAudit(
+        txn,
+        sourceRecordId: sourceRecordId,
+        canonicalId: newCanonicalId,
+        action: 'create',
+        reason: note,
+      );
+      await _recordManualGovernance(
+        txn,
+        action: 'split',
+        sourceRecordId: sourceRecordId,
+        fromCanonicalFoodId: fromCanonicalId,
+        toCanonicalFoodId: newCanonicalId,
+        note: note,
+      );
+      await _refreshCanonicalSnapshot(txn, newCanonicalId);
+      await _cleanupOrRefreshCanonical(txn, fromCanonicalId);
+    });
+  }
+
+  @override
+  Future<void> overrideCanonicalFood({
+    required String canonicalFoodId,
+    required CanonicalOverrideFields fields,
+    required String note,
+  }) async {
+    if (fields.isEmpty) {
+      return;
+    }
+    await _db.transaction((txn) async {
+      final canonical = await _canonicalById(txn, canonicalFoodId);
+      if (canonical == null) {
+        throw StateError('Canonical food not found: $canonicalFoodId');
+      }
+      await txn.insert('manual_canonical_override', {
+        'canonical_food_id': canonicalFoodId,
+        'display_name': fields.displayName,
+        'canonical_category': fields.category,
+        'canonical_country_hint': fields.countryHint,
+        'description': fields.description,
+        'serving_basis': fields.servingBasis,
+        'updated_at': DateTime.now().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await _recordManualGovernance(
+        txn,
+        action: 'override',
+        sourceRecordId: '',
+        fromCanonicalFoodId: canonicalFoodId,
+        toCanonicalFoodId: canonicalFoodId,
+        note: note,
+      );
+      await _refreshCanonicalSnapshot(txn, canonicalFoodId);
+    });
+  }
+
+  @override
+  Future<List<ManualGovernanceLogEntry>> getManualGovernanceLogs({
+    int limit = 50,
+  }) async {
+    final rows = await _db.query(
+      'manual_governance_log',
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+    return rows.map(_mapManualGovernanceLog).toList(growable: false);
+  }
+
+  @override
   Future<int> countFoods() async {
     final result = await _db.rawQuery('SELECT COUNT(*) AS count FROM foods');
     return Sqflite.firstIntValue(result) ?? 0;
@@ -353,6 +602,8 @@ class SqliteFoodRepository implements FoodRepository {
   Future<List<FetchJobEntry>> getRecentFetchJobs({
     String? query,
     String? phase,
+    String? importerId,
+    String? status,
     int limit = 20,
   }) async {
     final where = <String>[];
@@ -365,6 +616,14 @@ class SqliteFoodRepository implements FoodRepository {
     if (phase != null) {
       where.add('phase = ?');
       whereArgs.add(phase);
+    }
+    if (importerId != null) {
+      where.add('importer_id = ?');
+      whereArgs.add(importerId);
+    }
+    if (status != null) {
+      where.add('status = ?');
+      whereArgs.add(status);
     }
 
     final rows = await _db.query(
@@ -427,6 +686,29 @@ class SqliteFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<String?> getAppMeta(String key) async {
+    final rows = await _db.query(
+      'app_meta',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    return rows.first['value']! as String;
+  }
+
+  @override
+  Future<void> setAppMeta(String key, String value) async {
+    await _db.insert('app_meta', {
+      'key': key,
+      'value': value,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  @override
   Future<void> upsertDatasetArtifact(DatasetArtifactEntry entry) async {
     await _db.insert('dataset_artifact', {
       'id': entry.id,
@@ -438,6 +720,39 @@ class SqliteFoodRepository implements FoodRepository {
       'fetched_at': entry.fetchedAt.toIso8601String(),
       'status': entry.status,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  @override
+  Future<List<DatasetArtifactEntry>> getDatasetArtifacts({
+    int limit = 50,
+  }) async {
+    final rows = await _db.query(
+      'dataset_artifact',
+      orderBy: 'fetched_at DESC',
+      limit: limit,
+    );
+    return rows.map(_mapDatasetArtifact).toList(growable: false);
+  }
+
+  @override
+  Future<void> markDatasetArtifactRemoved(String id) async {
+    await _db.update(
+      'dataset_artifact',
+      {'status': 'removed'},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  @override
+  Future<StoragePaths> getStoragePaths() async {
+    final documents = await _documentsDirectoryResolver();
+    return StoragePaths(
+      databasePath: _databasePath ?? '',
+      documentsPath: documents.path,
+      exportsPath: p.join(documents.path, 'exports'),
+      cachePath: p.join(documents.path, 'cache'),
+    );
   }
 
   @override
@@ -454,6 +769,72 @@ class SqliteFoodRepository implements FoodRepository {
     final destinationFile = File(destinationPath);
     await destinationFile.parent.create(recursive: true);
     await sourceFile.copy(destinationFile.path);
+  }
+
+  @override
+  Future<void> addExportHistory(ExportHistoryEntry entry) async {
+    await _db.insert('export_history', {
+      'id': entry.id,
+      'path': entry.path,
+      'format': entry.format.name,
+      'detail_level': entry.detailLevel.name,
+      'record_count': entry.recordCount,
+      'scope_label': entry.scopeLabel,
+      'created_at': entry.createdAt.toIso8601String(),
+      'status': entry.status,
+      'summary': entry.summary,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  @override
+  Future<List<ExportHistoryEntry>> getExportHistory({int limit = 20}) async {
+    final rows = await _db.query(
+      'export_history',
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+    return rows.map(_mapExportHistory).toList(growable: false);
+  }
+
+  DatasetArtifactEntry _mapDatasetArtifact(Map<String, Object?> row) {
+    return DatasetArtifactEntry(
+      id: row['id']! as String,
+      importerId: row['importer_id']! as String,
+      artifactType: row['artifact_type']! as String,
+      localPath: row['local_path']! as String,
+      sourceUrl: row['source_url']! as String,
+      sourceVersion: row['source_version']! as String,
+      fetchedAt: DateTime.parse(row['fetched_at']! as String),
+      status: row['status']! as String,
+    );
+  }
+
+  ExportHistoryEntry _mapExportHistory(Map<String, Object?> row) {
+    return ExportHistoryEntry(
+      id: row['id']! as String,
+      path: row['path']! as String,
+      format: ExportFormat.values.byName(row['format']! as String),
+      detailLevel: ExportDetailLevel.values.byName(
+        row['detail_level']! as String,
+      ),
+      recordCount: row['record_count']! as int,
+      scopeLabel: row['scope_label']! as String,
+      createdAt: DateTime.parse(row['created_at']! as String),
+      status: row['status']! as String,
+      summary: row['summary']! as String,
+    );
+  }
+
+  ManualGovernanceLogEntry _mapManualGovernanceLog(Map<String, Object?> row) {
+    return ManualGovernanceLogEntry(
+      id: row['id']! as String,
+      action: row['action']! as String,
+      sourceRecordId: row['source_record_id']! as String,
+      fromCanonicalFoodId: row['from_canonical_food_id']! as String,
+      toCanonicalFoodId: row['to_canonical_food_id']! as String,
+      note: row['note']! as String,
+      createdAt: DateTime.parse(row['created_at']! as String),
+    );
   }
 
   Future<void> _createLegacyTables(DatabaseExecutor db) async {
@@ -635,6 +1016,48 @@ class SqliteFoodRepository implements FoodRepository {
       CREATE TABLE IF NOT EXISTS app_meta(
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createExportHistoryTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS export_history(
+        id TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        format TEXT NOT NULL,
+        detail_level TEXT NOT NULL,
+        record_count INTEGER NOT NULL,
+        scope_label TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createManualGovernanceTables(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS manual_governance_log(
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        from_canonical_food_id TEXT NOT NULL,
+        to_canonical_food_id TEXT NOT NULL,
+        note TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS manual_canonical_override(
+        canonical_food_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        canonical_category TEXT,
+        canonical_country_hint TEXT,
+        description TEXT,
+        serving_basis TEXT,
+        updated_at TEXT NOT NULL
       )
     ''');
   }
@@ -1207,6 +1630,141 @@ class SqliteFoodRepository implements FoodRepository {
     }
   }
 
+  Future<void> _upsertManualMergeAudit(
+    DatabaseExecutor db, {
+    required String sourceRecordId,
+    required String canonicalId,
+    required String action,
+    required String reason,
+  }) async {
+    final auditId = 'merge-audit:$sourceRecordId';
+    await db.delete(
+      'merge_audit_candidate',
+      where: 'merge_audit_id = ?',
+      whereArgs: [auditId],
+    );
+    await db.insert('merge_audit', {
+      'id': auditId,
+      'source_record_id': sourceRecordId,
+      'canonical_food_id': canonicalId,
+      'action': action,
+      'confidence': 1.0,
+      'matched_by': 'manual-governance',
+      'reason': reason,
+      'item_alias_key': '',
+      'item_category_key': '',
+      'item_serving_key': '',
+      'created_at': DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, Object?>?> _sourceRecordById(
+    DatabaseExecutor db,
+    String sourceRecordId,
+  ) async {
+    final rows = await db.query(
+      'source_record',
+      where: 'id = ?',
+      whereArgs: [sourceRecordId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.single;
+  }
+
+  Future<Map<String, Object?>?> _canonicalById(
+    DatabaseExecutor db,
+    String canonicalId,
+  ) async {
+    final rows = await db.query(
+      'canonical_food',
+      where: 'id = ?',
+      whereArgs: [canonicalId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.single;
+  }
+
+  Future<void> _upsertAliasForSource(
+    DatabaseExecutor db,
+    String canonicalId,
+    Map<String, Object?> source,
+  ) async {
+    final alias = source['record_title']! as String;
+    if (alias.trim().isEmpty) {
+      return;
+    }
+    await db.insert('food_alias', {
+      'id': '$canonicalId:${_textNormalizer.aliasKey(alias)}',
+      'canonical_food_id': canonicalId,
+      'alias': alias,
+      'alias_key': _textNormalizer.aliasKey(alias),
+      'locale': 'und',
+      'source': 'manual-governance',
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<void> _recordManualGovernance(
+    DatabaseExecutor db, {
+    required String action,
+    required String sourceRecordId,
+    required String fromCanonicalFoodId,
+    required String toCanonicalFoodId,
+    required String note,
+  }) async {
+    final now = DateTime.now();
+    await db.insert('manual_governance_log', {
+      'id': 'manual-${now.microsecondsSinceEpoch}',
+      'action': action,
+      'source_record_id': sourceRecordId,
+      'from_canonical_food_id': fromCanonicalFoodId,
+      'to_canonical_food_id': toCanonicalFoodId,
+      'note': note,
+      'created_at': now.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> _cleanupOrRefreshCanonical(
+    DatabaseExecutor db,
+    String canonicalId,
+  ) async {
+    final count = Sqflite.firstIntValue(
+      await db.rawQuery(
+        'SELECT COUNT(*) AS count FROM source_record WHERE canonical_food_id = ?',
+        [canonicalId],
+      ),
+    );
+    if ((count ?? 0) > 0) {
+      await _refreshCanonicalSnapshot(db, canonicalId);
+      return;
+    }
+    await db.delete(
+      'manual_canonical_override',
+      where: 'canonical_food_id = ?',
+      whereArgs: [canonicalId],
+    );
+    await db.delete(
+      'food_alias',
+      where: 'canonical_food_id = ?',
+      whereArgs: [canonicalId],
+    );
+    await db.delete(
+      'canonical_food',
+      where: 'id = ?',
+      whereArgs: [canonicalId],
+    );
+    await db.delete('foods', where: 'id = ?', whereArgs: [canonicalId]);
+    await db.delete(
+      'food_tags',
+      where: 'food_id = ?',
+      whereArgs: [canonicalId],
+    );
+    await db.delete(
+      'nutrients',
+      where: 'food_id = ?',
+      whereArgs: [canonicalId],
+    );
+  }
+
   Future<void> _upsertSourceRecord(
     DatabaseExecutor db,
     String canonicalId,
@@ -1341,19 +1899,43 @@ class SqliteFoodRepository implements FoodRepository {
       limit: 1,
     );
     final canonicalRow = canonicalRows.single;
-    final displayName = firstSource['record_title']! as String;
+    final overrideRows = await db.query(
+      'manual_canonical_override',
+      where: 'canonical_food_id = ?',
+      whereArgs: [canonicalId],
+      limit: 1,
+    );
+    final override = overrideRows.isEmpty ? null : overrideRows.single;
+    final displayName = _overrideValue(
+      override?['display_name'],
+      canonicalRow['display_name']! as String,
+    );
     final latestDescription =
         (latestSource['record_description']! as String).trim().isNotEmpty
         ? latestSource['record_description']! as String
         : firstSource['record_description']! as String;
-    final servingBasis = canonicalRow['serving_basis']! as String;
-    final category = canonicalRow['canonical_category']! as String;
-    final country = countries.length > 1
+    final servingBasis = _overrideValue(
+      override?['serving_basis'],
+      canonicalRow['serving_basis']! as String,
+    );
+    final category = _overrideValue(
+      override?['canonical_category'],
+      canonicalRow['canonical_category']! as String,
+    );
+    final computedCountry = countries.length > 1
         ? 'Multi-source'
         : (countries.isEmpty ? '' : countries.first);
-    final description = latestDescription.isNotEmpty
+    final country = _overrideValue(
+      override?['canonical_country_hint'],
+      computedCountry,
+    );
+    final computedDescription = latestDescription.isNotEmpty
         ? latestDescription
         : canonicalRow['description']! as String;
+    final description = _overrideValue(
+      override?['description'],
+      computedDescription,
+    );
 
     await db.insert('canonical_food', {
       'id': canonicalId,
@@ -1382,6 +1964,14 @@ class SqliteFoodRepository implements FoodRepository {
       lastUpdated: DateTime.parse(latestSource['source_updated_at']! as String),
     );
     await _writeLegacySnapshot(db, snapshot);
+  }
+
+  String _overrideValue(Object? overrideValue, String fallback) {
+    final value = overrideValue?.toString().trim();
+    if (value == null || value.isEmpty) {
+      return fallback;
+    }
+    return value;
   }
 
   Future<void> _writeLegacySnapshot(DatabaseExecutor db, FoodItem item) async {

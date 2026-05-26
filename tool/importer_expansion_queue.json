@@ -49,7 +49,7 @@
     "countryName": "Germany",
     "importerId": "de-bls",
     "templateKind": "single_excel",
-    "status": "queued",
+    "status": "completed",
     "blockedReason": "",
     "officialSourceUrl": "https://www.blsdb.de/"
   },
@@ -58,7 +58,7 @@
     "countryName": "Italy",
     "importerId": "it-crea",
     "templateKind": "single_excel",
-    "status": "queued",
+    "status": "completed",
     "blockedReason": "",
     "officialSourceUrl": "https://www.crea.gov.it/en/-/tabella-di-composizione-degli-alimenti"
   },
@@ -67,8 +67,8 @@
     "countryName": "Spain",
     "importerId": "es-bedca",
     "templateKind": "single_excel",
-    "status": "queued",
-    "blockedReason": "",
+    "status": "blocked",
+    "blockedReason": "BEDCA does not expose the queued single-Excel source shape at the official public path. Official access is through the BEDCA web/database interface, and the published use conditions require clear AESAN/BEDCA attribution and prohibit modifying or altering the original meaning, so this needs a web/API importer design and license/product review before implementation.",
     "officialSourceUrl": "https://www.bedca.net/"
   },
   {
@@ -76,8 +76,8 @@
     "countryName": "Finland",
     "importerId": "fi-fineli",
     "templateKind": "csv_directory",
-    "status": "queued",
-    "blockedReason": "",
+    "status": "blocked",
+    "blockedReason": "The official Fineli Open Data URL currently redirects to THL's maintenance page, so the official CSV package and license path could not be verified during the automation run.",
     "officialSourceUrl": "https://fineli.fi/fineli/en/avoin-data"
   }
 ]

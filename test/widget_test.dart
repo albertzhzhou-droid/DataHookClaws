@@ -81,6 +81,7 @@ void main() {
     expect(find.text('No imports recorded yet'), findsOneWidget);
     expect(find.text('Local search results'), findsOneWidget);
     expect(find.text('Export'), findsOneWidget);
+    expect(find.text('Operations'), findsOneWidget);
     expect(
       find.textContaining('${nationalFoodSources.length} sources tracked'),
       findsOneWidget,
@@ -161,6 +162,74 @@ void main() {
     },
   );
 
+  testWidgets(
+    'advanced filters run local-only search without foreground fetch',
+    (tester) async {
+      final repository = MemoryFoodRepository(
+        seedItems: [
+          FoodItem(
+            id: 'canada-cnf:salmon',
+            name: 'Atlantic Salmon',
+            category: 'Seafood',
+            country: 'Canada',
+            sourceName: 'CNF',
+            description: 'Official salmon record',
+            servingBasis: 'Per 100 g',
+            tags: const ['official'],
+            nutrients: const [
+              Nutrient(label: 'Protein', amount: 21, unit: 'g'),
+            ],
+            lastUpdated: DateTime(2026, 5, 24),
+          ),
+        ],
+      );
+      final useCase = SyncFoodCatalogUseCase(
+        repository: repository,
+        normalizer: const FoodRecordNormalizer(),
+        importers: const [],
+      );
+      final searchOrchestrator = SearchOrchestrator(
+        repository: repository,
+        foregroundFetchRunner: _ThrowingForegroundRunner(repository),
+        budgetPlanner: const FetchBudgetPlanner(),
+        queryExpansionService: _WidgetQueryExpansionService(),
+        enrichmentQueue: BackgroundEnrichmentQueue(syncUseCase: useCase),
+      );
+
+      await tester.pumpWidget(
+        DataHookClawsApp(
+          repository: repository,
+          syncUseCase: useCase,
+          searchOrchestrator: searchOrchestrator,
+          exportService: FoodCatalogExportService(
+            repository: repository,
+            documentsDirectoryResolver: () async => Directory.systemTemp,
+          ),
+          importerDescriptors: importerDescriptors,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Advanced filters'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).first, 'salmon');
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Country filter'),
+        'Canada',
+      );
+      await tester.drag(
+        find.byType(SingleChildScrollView),
+        const Offset(0, -300),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Apply filters'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Atlantic Salmon'), findsWidgets);
+      expect(find.text('Advanced local filters applied.'), findsOneWidget);
+    },
+  );
+
   testWidgets('renders provenance detail sheet sections', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -232,6 +301,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Overview'), findsOneWidget);
+    expect(find.text('Nutrient source comparison'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Official sources'),
+      300,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('Official sources'), findsOneWidget);
     expect(find.text('Merge audit'), findsOneWidget);
     expect(find.textContaining('Reused canonical'), findsOneWidget);
@@ -286,6 +362,9 @@ void main() {
                     isExportingSummaryJson: false,
                     isExportingDetailedCsv: false,
                     isExportingSnapshot: false,
+                    latestArtifact: null,
+                    isSharing: false,
+                    onShareLatest: null,
                   ),
                   ListTile(
                     title: const Text('Last export status'),
@@ -402,6 +481,27 @@ class _WidgetForegroundRunner extends ForegroundFetchRunner {
       ],
       succeededSources: const ['usda', 'canada-cnf'],
     );
+  }
+}
+
+class _ThrowingForegroundRunner extends ForegroundFetchRunner {
+  _ThrowingForegroundRunner(MemoryFoodRepository repository)
+    : super(
+        syncUseCase: SyncFoodCatalogUseCase(
+          repository: repository,
+          importers: const [],
+          normalizer: const FoodRecordNormalizer(),
+        ),
+      );
+
+  @override
+  Future<ForegroundFetchResult> run({
+    required String query,
+    required List<String> importerIds,
+    required int limitPerImporter,
+    required Future<void> Function(FetchJobEntry job) persistJob,
+  }) {
+    throw StateError('Foreground fetch should not run for advanced filters.');
   }
 }
 

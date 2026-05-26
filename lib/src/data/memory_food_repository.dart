@@ -1,13 +1,19 @@
 import '../models/ai_suggestion_log_entry.dart';
 import '../models/dataset_artifact_entry.dart';
+import '../models/export_history_entry.dart';
 import '../models/fetch_job_entry.dart';
 import '../models/food_details.dart';
+import '../models/food_search_query.dart';
 import '../models/food_item.dart';
 import '../models/food_summary.dart';
 import '../models/import_log_entry.dart';
+import '../models/manual_governance.dart';
+import '../models/merge_review_issue.dart';
 import '../models/nutrient.dart';
+import '../models/storage_paths.dart';
 import '../search/food_search_index.dart';
 import '../domain/canonical_merge_service.dart';
+import '../domain/food_quality_service.dart';
 import 'food_repository.dart';
 
 class MemoryFoodRepository implements FoodRepository {
@@ -20,12 +26,16 @@ class MemoryFoodRepository implements FoodRepository {
   }
 
   final CanonicalMergeService _mergeService;
+  final FoodQualityService _qualityService = FoodQualityService();
   final List<FoodItem> _items = [];
   final Map<String, FoodDetails> _detailsByCanonicalId = {};
   final List<ImportLogEntry> _importLogs = [];
   final List<FetchJobEntry> _fetchJobs = [];
   final List<AiSuggestionLogEntry> _aiSuggestionLogs = [];
   final List<DatasetArtifactEntry> _datasetArtifacts = [];
+  final List<ExportHistoryEntry> _exportHistory = [];
+  final List<ManualGovernanceLogEntry> _manualGovernanceLogs = [];
+  final Map<String, String> _appMeta = {};
   final FoodSearchIndex _searchIndex = FoodSearchIndex();
 
   @override
@@ -50,6 +60,28 @@ class MemoryFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<List<FoodItem>> searchFoodsAdvanced(
+    FoodSearchQuery query, {
+    int limit = 100,
+  }) async {
+    final matched = <FoodItem>[];
+    for (final item in _items) {
+      final details = _detailsByCanonicalId[item.id];
+      if (_qualityService.matchesAdvancedQuery(
+        item: item,
+        details: details,
+        query: query,
+      )) {
+        matched.add(item);
+      }
+      if (matched.length >= limit) {
+        break;
+      }
+    }
+    return matched;
+  }
+
+  @override
   Future<List<FoodSummary>> searchFoodSummaries(
     String query, {
     int limit = 20,
@@ -70,6 +102,15 @@ class MemoryFoodRepository implements FoodRepository {
           ),
         )
         .toList(growable: false);
+  }
+
+  @override
+  Future<List<FoodSummary>> searchFoodSummariesAdvanced(
+    FoodSearchQuery query, {
+    int limit = 100,
+  }) async {
+    final items = await searchFoodsAdvanced(query, limit: limit);
+    return items.map(_qualityService.summaryFromItem).toList(growable: false);
   }
 
   @override
@@ -110,6 +151,163 @@ class MemoryFoodRepository implements FoodRepository {
   @override
   Future<FoodDetails?> getFoodDetails(String canonicalFoodId) async {
     return _detailsByCanonicalId[canonicalFoodId];
+  }
+
+  @override
+  Future<List<MergeReviewIssue>> getMergeReviewIssues({int limit = 100}) async {
+    final issues = <MergeReviewIssue>[];
+    for (final details in _detailsByCanonicalId.values) {
+      issues.addAll(_qualityService.reviewIssuesForDetails(details));
+    }
+    issues.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    return issues.take(limit).toList(growable: false);
+  }
+
+  @override
+  Future<void> mergeSourceRecord({
+    required String sourceRecordId,
+    required String targetCanonicalFoodId,
+    required String note,
+  }) async {
+    final sourceLocation = _findSource(sourceRecordId);
+    if (sourceLocation == null) {
+      throw StateError('Source record not found: $sourceRecordId');
+    }
+    final target = _detailsByCanonicalId[targetCanonicalFoodId];
+    if (target == null) {
+      throw StateError(
+        'Target canonical food not found: $targetCanonicalFoodId',
+      );
+    }
+    if (sourceLocation.canonicalId == targetCanonicalFoodId) {
+      return;
+    }
+
+    final source = sourceLocation.source;
+    final observations = sourceLocation.details.nutrientObservations
+        .where((item) => item.sourceRecordId == sourceRecordId)
+        .toList(growable: false);
+    final fromDetails = _removeSourceFromDetails(
+      sourceLocation.details,
+      sourceRecordId,
+    );
+    _replaceOrRemoveDetails(sourceLocation.canonicalId, fromDetails);
+    final toDetails = _addSourceToDetails(
+      target,
+      source,
+      observations,
+      targetCanonicalFoodId,
+    );
+    _detailsByCanonicalId[targetCanonicalFoodId] = toDetails;
+    _upsertSnapshot(_snapshotFromDetails(toDetails));
+    _recordGovernance(
+      action: 'merge',
+      sourceRecordId: sourceRecordId,
+      fromCanonicalFoodId: sourceLocation.canonicalId,
+      toCanonicalFoodId: targetCanonicalFoodId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<void> splitSourceRecord({
+    required String sourceRecordId,
+    required String note,
+  }) async {
+    final sourceLocation = _findSource(sourceRecordId);
+    if (sourceLocation == null) {
+      throw StateError('Source record not found: $sourceRecordId');
+    }
+    final newCanonicalId = 'manual-split:$sourceRecordId';
+    final source = sourceLocation.source;
+    final observations = sourceLocation.details.nutrientObservations
+        .where((item) => item.sourceRecordId == sourceRecordId)
+        .toList(growable: false);
+
+    final fromDetails = _removeSourceFromDetails(
+      sourceLocation.details,
+      sourceRecordId,
+    );
+    _replaceOrRemoveDetails(sourceLocation.canonicalId, fromDetails);
+    final newDetails = FoodDetails(
+      id: newCanonicalId,
+      displayName: source.recordTitle,
+      category: sourceLocation.details.category,
+      countryHint: source.country,
+      description: source.recordDescription,
+      servingBasis: sourceLocation.details.servingBasis,
+      lastAggregatedAt: source.sourceUpdatedAt,
+      aliases: [source.recordTitle],
+      sourceRecords: [source],
+      aggregatedNutrients: _aggregateNutrients(
+        observations: observations,
+        sourceRecords: [source],
+      ),
+      nutrientObservations: observations,
+    );
+    _detailsByCanonicalId[newCanonicalId] = newDetails;
+    _upsertSnapshot(_snapshotFromDetails(newDetails));
+    _recordGovernance(
+      action: 'split',
+      sourceRecordId: sourceRecordId,
+      fromCanonicalFoodId: sourceLocation.canonicalId,
+      toCanonicalFoodId: newCanonicalId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<void> overrideCanonicalFood({
+    required String canonicalFoodId,
+    required CanonicalOverrideFields fields,
+    required String note,
+  }) async {
+    final details = _detailsByCanonicalId[canonicalFoodId];
+    if (details == null) {
+      throw StateError('Canonical food not found: $canonicalFoodId');
+    }
+    if (fields.isEmpty) {
+      return;
+    }
+    final updated = FoodDetails(
+      id: details.id,
+      displayName: fields.displayName?.trim().isNotEmpty == true
+          ? fields.displayName!.trim()
+          : details.displayName,
+      category: fields.category?.trim().isNotEmpty == true
+          ? fields.category!.trim()
+          : details.category,
+      countryHint: fields.countryHint?.trim().isNotEmpty == true
+          ? fields.countryHint!.trim()
+          : details.countryHint,
+      description: fields.description?.trim().isNotEmpty == true
+          ? fields.description!.trim()
+          : details.description,
+      servingBasis: fields.servingBasis?.trim().isNotEmpty == true
+          ? fields.servingBasis!.trim()
+          : details.servingBasis,
+      lastAggregatedAt: DateTime.now(),
+      aliases: details.aliases,
+      sourceRecords: details.sourceRecords,
+      aggregatedNutrients: details.aggregatedNutrients,
+      nutrientObservations: details.nutrientObservations,
+    );
+    _detailsByCanonicalId[canonicalFoodId] = updated;
+    _upsertSnapshot(_snapshotFromDetails(updated));
+    _recordGovernance(
+      action: 'override',
+      sourceRecordId: '',
+      fromCanonicalFoodId: canonicalFoodId,
+      toCanonicalFoodId: canonicalFoodId,
+      note: note,
+    );
+  }
+
+  @override
+  Future<List<ManualGovernanceLogEntry>> getManualGovernanceLogs({
+    int limit = 50,
+  }) async {
+    return _manualGovernanceLogs.take(limit).toList(growable: false);
   }
 
   @override
@@ -313,6 +511,116 @@ class MemoryFoodRepository implements FoodRepository {
     }
   }
 
+  _SourceLocation? _findSource(String sourceRecordId) {
+    for (final details in _detailsByCanonicalId.values) {
+      for (final source in details.sourceRecords) {
+        if (source.id == sourceRecordId) {
+          return _SourceLocation(
+            canonicalId: details.id,
+            details: details,
+            source: source,
+          );
+        }
+      }
+    }
+    return null;
+  }
+
+  FoodDetails _removeSourceFromDetails(
+    FoodDetails details,
+    String sourceRecordId,
+  ) {
+    final sources = details.sourceRecords
+        .where((item) => item.id != sourceRecordId)
+        .toList(growable: false);
+    final observations = details.nutrientObservations
+        .where((item) => item.sourceRecordId != sourceRecordId)
+        .toList(growable: false);
+    return FoodDetails(
+      id: details.id,
+      displayName: details.displayName,
+      category: details.category,
+      countryHint: _aggregateCountry(
+        sources.map((item) => item.country).toSet(),
+      ),
+      description: details.description,
+      servingBasis: details.servingBasis,
+      lastAggregatedAt: DateTime.now(),
+      aliases: details.aliases,
+      sourceRecords: sources,
+      aggregatedNutrients: _aggregateNutrients(
+        observations: observations,
+        sourceRecords: sources,
+      ),
+      nutrientObservations: observations,
+    );
+  }
+
+  void _replaceOrRemoveDetails(String canonicalId, FoodDetails details) {
+    if (details.sourceRecords.isEmpty) {
+      _detailsByCanonicalId.remove(canonicalId);
+      _items.removeWhere((item) => item.id == canonicalId);
+      return;
+    }
+    _detailsByCanonicalId[canonicalId] = details;
+    _upsertSnapshot(_snapshotFromDetails(details));
+  }
+
+  FoodDetails _addSourceToDetails(
+    FoodDetails details,
+    SourceRecordView source,
+    List<NutrientObservationView> observations,
+    String canonicalId,
+  ) {
+    final sources = [...details.sourceRecords, source];
+    final nextObservations = [
+      ...details.nutrientObservations.where(
+        (item) => item.sourceRecordId != source.id,
+      ),
+      ...observations,
+    ];
+    return FoodDetails(
+      id: canonicalId,
+      displayName: details.displayName,
+      category: details.category,
+      countryHint: _aggregateCountry(
+        sources.map((item) => item.country).toSet(),
+      ),
+      description: details.description,
+      servingBasis: details.servingBasis,
+      lastAggregatedAt: DateTime.now(),
+      aliases: {...details.aliases, source.recordTitle}.toList(growable: false),
+      sourceRecords: sources,
+      aggregatedNutrients: _aggregateNutrients(
+        observations: nextObservations,
+        sourceRecords: sources,
+      ),
+      nutrientObservations: nextObservations,
+    );
+  }
+
+  void _recordGovernance({
+    required String action,
+    required String sourceRecordId,
+    required String fromCanonicalFoodId,
+    required String toCanonicalFoodId,
+    required String note,
+  }) {
+    final now = DateTime.now();
+    _manualGovernanceLogs.insert(
+      0,
+      ManualGovernanceLogEntry(
+        id: 'manual-${now.microsecondsSinceEpoch}',
+        action: action,
+        sourceRecordId: sourceRecordId,
+        fromCanonicalFoodId: fromCanonicalFoodId,
+        toCanonicalFoodId: toCanonicalFoodId,
+        note: note,
+        createdAt: now,
+      ),
+    );
+  }
+
   DateTime _latestAggregatedAt(FoodDetails? existing, FoodItem incoming) {
     final previous =
         existing?.lastAggregatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -349,6 +657,8 @@ class MemoryFoodRepository implements FoodRepository {
   Future<List<FetchJobEntry>> getRecentFetchJobs({
     String? query,
     String? phase,
+    String? importerId,
+    String? status,
     int limit = 20,
   }) async {
     final filtered =
@@ -356,7 +666,13 @@ class MemoryFoodRepository implements FoodRepository {
             .where((entry) {
               final matchesQuery = query == null || entry.query == query;
               final matchesPhase = phase == null || entry.phase == phase;
-              return matchesQuery && matchesPhase;
+              final matchesImporter =
+                  importerId == null || entry.importerId == importerId;
+              final matchesStatus = status == null || entry.status == status;
+              return matchesQuery &&
+                  matchesPhase &&
+                  matchesImporter &&
+                  matchesStatus;
             })
             .toList(growable: false)
           ..sort((left, right) => right.startedAt.compareTo(left.startedAt));
@@ -391,6 +707,16 @@ class MemoryFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<String?> getAppMeta(String key) async {
+    return _appMeta[key];
+  }
+
+  @override
+  Future<void> setAppMeta(String key, String value) async {
+    _appMeta[key] = value;
+  }
+
+  @override
   Future<void> upsertDatasetArtifact(DatasetArtifactEntry entry) async {
     final index = _datasetArtifacts.indexWhere((item) => item.id == entry.id);
     if (index >= 0) {
@@ -401,9 +727,73 @@ class MemoryFoodRepository implements FoodRepository {
   }
 
   @override
+  Future<List<DatasetArtifactEntry>> getDatasetArtifacts({
+    int limit = 50,
+  }) async {
+    final sorted = List<DatasetArtifactEntry>.from(_datasetArtifacts)
+      ..sort((left, right) => right.fetchedAt.compareTo(left.fetchedAt));
+    return sorted.take(limit).toList(growable: false);
+  }
+
+  @override
+  Future<void> markDatasetArtifactRemoved(String id) async {
+    final index = _datasetArtifacts.indexWhere((item) => item.id == id);
+    if (index < 0) {
+      return;
+    }
+    final current = _datasetArtifacts[index];
+    _datasetArtifacts[index] = DatasetArtifactEntry(
+      id: current.id,
+      importerId: current.importerId,
+      artifactType: current.artifactType,
+      localPath: current.localPath,
+      sourceUrl: current.sourceUrl,
+      sourceVersion: current.sourceVersion,
+      fetchedAt: current.fetchedAt,
+      status: 'removed',
+    );
+  }
+
+  @override
+  Future<StoragePaths> getStoragePaths() async {
+    return const StoragePaths(
+      databasePath: '',
+      documentsPath: '',
+      exportsPath: '',
+      cachePath: '',
+    );
+  }
+
+  @override
   Future<void> copyDatabaseSnapshot({required String destinationPath}) async {
     throw UnsupportedError(
       'MemoryFoodRepository does not support database snapshot export.',
     );
   }
+
+  @override
+  Future<void> addExportHistory(ExportHistoryEntry entry) async {
+    _exportHistory.removeWhere((item) => item.id == entry.id);
+    _exportHistory.add(entry);
+    _exportHistory.sort(
+      (left, right) => right.createdAt.compareTo(left.createdAt),
+    );
+  }
+
+  @override
+  Future<List<ExportHistoryEntry>> getExportHistory({int limit = 20}) async {
+    return _exportHistory.take(limit).toList(growable: false);
+  }
+}
+
+class _SourceLocation {
+  const _SourceLocation({
+    required this.canonicalId,
+    required this.details,
+    required this.source,
+  });
+
+  final String canonicalId;
+  final FoodDetails details;
+  final SourceRecordView source;
 }

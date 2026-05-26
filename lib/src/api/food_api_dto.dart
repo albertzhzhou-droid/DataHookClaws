@@ -62,6 +62,7 @@ class FoodDetailsDto {
     required this.sources,
     required this.aggregatedNutrients,
     required this.observationsBySource,
+    required this.nutrientComparisons,
   });
 
   final String id;
@@ -75,6 +76,7 @@ class FoodDetailsDto {
   final List<SourceRecordDto> sources;
   final List<NutrientDto> aggregatedNutrients;
   final Map<String, List<NutrientObservationDto>> observationsBySource;
+  final List<NutrientComparisonDto> nutrientComparisons;
 
   factory FoodDetailsDto.fromDetails(FoodDetails details) {
     final observationsBySource = <String, List<NutrientObservationDto>>{};
@@ -156,6 +158,9 @@ class FoodDetailsDto {
           )
           .toList(growable: false),
       observationsBySource: observationsBySource,
+      nutrientComparisons: details.nutrientComparisons
+          .map(NutrientComparisonDto.fromView)
+          .toList(growable: false),
     );
   }
 
@@ -179,6 +184,94 @@ class FoodDetailsDto {
           value.map((observation) => observation.toJson()).toList(),
         ),
       ),
+      'nutrientComparisons': nutrientComparisons
+          .map((comparison) => comparison.toJson())
+          .toList(),
+    };
+  }
+}
+
+class NutrientComparisonDto {
+  const NutrientComparisonDto({
+    required this.canonicalLabel,
+    required this.aggregated,
+    required this.observations,
+    required this.varianceStatus,
+  });
+
+  final String canonicalLabel;
+  final NutrientDto? aggregated;
+  final List<NutrientSourceObservationDto> observations;
+  final String varianceStatus;
+
+  factory NutrientComparisonDto.fromView(NutrientComparisonView view) {
+    final aggregated = view.aggregated;
+    return NutrientComparisonDto(
+      canonicalLabel: view.canonicalLabel,
+      aggregated: aggregated == null
+          ? null
+          : NutrientDto(
+              label: aggregated.label,
+              amount: aggregated.amount,
+              unit: aggregated.unit,
+            ),
+      observations: view.observations
+          .map(NutrientSourceObservationDto.fromView)
+          .toList(growable: false),
+      varianceStatus: view.varianceStatus.name,
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'canonicalLabel': canonicalLabel,
+      'aggregated': aggregated?.toJson(),
+      'observations': observations
+          .map((observation) => observation.toJson())
+          .toList(),
+      'varianceStatus': varianceStatus,
+    };
+  }
+}
+
+class NutrientSourceObservationDto {
+  const NutrientSourceObservationDto({
+    required this.sourceRecordId,
+    required this.sourceName,
+    required this.country,
+    required this.amount,
+    required this.unit,
+    required this.originalUnit,
+  });
+
+  final String sourceRecordId;
+  final String sourceName;
+  final String country;
+  final double amount;
+  final String unit;
+  final String originalUnit;
+
+  factory NutrientSourceObservationDto.fromView(
+    NutrientSourceObservationView view,
+  ) {
+    return NutrientSourceObservationDto(
+      sourceRecordId: view.sourceRecordId,
+      sourceName: view.sourceName,
+      country: view.country,
+      amount: view.amount,
+      unit: view.unit,
+      originalUnit: view.originalUnit,
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'sourceRecordId': sourceRecordId,
+      'sourceName': sourceName,
+      'country': country,
+      'amount': amount,
+      'unit': unit,
+      'originalUnit': originalUnit,
     };
   }
 }

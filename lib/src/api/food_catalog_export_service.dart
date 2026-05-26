@@ -6,24 +6,49 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/food_repository.dart';
+import '../domain/ai_assist_services.dart';
+import '../domain/settings_service.dart';
+import '../models/export_history_entry.dart';
 import '../models/food_details.dart';
 import 'export_models.dart';
 import 'food_api_dto.dart';
 
 typedef ExportDirectoryResolver = Future<Directory> Function();
+typedef ExportDirectoryPathResolver = Future<String> Function();
 
 class FoodCatalogExportService {
   FoodCatalogExportService({
     required FoodRepository repository,
     ExportDirectoryResolver? documentsDirectoryResolver,
+    ExportDirectoryPathResolver? exportDirectoryPathResolver,
+    ExportSummaryService? exportSummaryService,
     DateTime Function()? clock,
   }) : _repository = repository,
        _documentsDirectoryResolver =
            documentsDirectoryResolver ?? getApplicationDocumentsDirectory,
+       _exportDirectoryPathResolver = exportDirectoryPathResolver,
+       _exportSummaryService = exportSummaryService,
        _clock = clock ?? DateTime.now;
+
+  FoodCatalogExportService.withSettings({
+    required FoodRepository repository,
+    required SettingsService settingsService,
+    ExportSummaryService? exportSummaryService,
+    DateTime Function()? clock,
+  }) : this(
+         repository: repository,
+         exportDirectoryPathResolver: () async {
+           final settings = await settingsService.load();
+           return settingsService.effectiveExportDirectory(settings);
+         },
+         exportSummaryService: exportSummaryService,
+         clock: clock,
+       );
 
   final FoodRepository _repository;
   final ExportDirectoryResolver _documentsDirectoryResolver;
+  final ExportDirectoryPathResolver? _exportDirectoryPathResolver;
+  final ExportSummaryService? _exportSummaryService;
   final DateTime Function() _clock;
 
   Future<ExportArtifact> exportSearchResults({
@@ -98,7 +123,7 @@ class FoodCatalogExportService {
       'data-hook-claws-snapshot-${_fileTimestamp(now)}.db',
     );
     await _repository.copyDatabaseSnapshot(destinationPath: filePath);
-    return ExportArtifact(
+    final artifact = ExportArtifact(
       path: filePath,
       format: ExportFormat.sqliteSnapshot,
       detailLevel: ExportDetailLevel.detailed,
@@ -107,6 +132,8 @@ class FoodCatalogExportService {
       scopeLabel: 'database-snapshot',
       mimeType: 'application/octet-stream',
     );
+    await _recordExportHistory(artifact);
+    return artifact;
   }
 
   Future<List<FoodDetails>> _loadDetails(List<FoodSummaryDto> summaries) async {
@@ -161,7 +188,7 @@ class FoodCatalogExportService {
       await file.writeAsString(csv.encode(rows), flush: true);
     }
 
-    return ExportArtifact(
+    final artifact = ExportArtifact(
       path: filePath,
       format: format,
       detailLevel: detailLevel,
@@ -172,6 +199,8 @@ class FoodCatalogExportService {
       scopeLabel: '$scopeType:$scopeValue',
       mimeType: format == ExportFormat.json ? 'application/json' : 'text/csv',
     );
+    await _recordExportHistory(artifact);
+    return artifact;
   }
 
   Map<String, Object?> _jsonPayload({
@@ -295,6 +324,14 @@ class FoodCatalogExportService {
   }
 
   Future<Directory> _ensureExportDirectory() async {
+    final configuredPath = await _exportDirectoryPathResolver?.call();
+    if (configuredPath != null && configuredPath.trim().isNotEmpty) {
+      final configured = Directory(configuredPath.trim());
+      if (!configured.existsSync()) {
+        await configured.create(recursive: true);
+      }
+      return configured;
+    }
     final documentsDirectory = await _documentsDirectoryResolver();
     final exportDirectory = Directory(
       p.join(documentsDirectory.path, 'exports'),
@@ -303,6 +340,31 @@ class FoodCatalogExportService {
       await exportDirectory.create(recursive: true);
     }
     return exportDirectory;
+  }
+
+  Future<void> _recordExportHistory(ExportArtifact artifact) async {
+    final summaryService = _exportSummaryService;
+    final summary = summaryService == null
+        ? 'Exported ${artifact.recordCount} records for ${artifact.scopeLabel}.'
+        : await summaryService.summarize(
+            scopeLabel: artifact.scopeLabel,
+            format: artifact.format.name,
+            detailLevel: artifact.detailLevel.name,
+            recordCount: artifact.recordCount,
+          );
+    await _repository.addExportHistory(
+      ExportHistoryEntry(
+        id: 'export-${artifact.createdAt.microsecondsSinceEpoch}',
+        path: artifact.path,
+        format: artifact.format,
+        detailLevel: artifact.detailLevel,
+        recordCount: artifact.recordCount,
+        scopeLabel: artifact.scopeLabel,
+        createdAt: artifact.createdAt,
+        status: 'success',
+        summary: summary,
+      ),
+    );
   }
 
   String _fileTimestamp(DateTime value) {

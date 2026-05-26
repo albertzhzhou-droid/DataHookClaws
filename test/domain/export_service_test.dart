@@ -37,11 +37,40 @@ void main() {
         jsonDecode(await File(artifact.path).readAsString())
             as Map<String, Object?>;
     expect(artifact.recordCount, 1);
+    expect(await repository.getExportHistory(), hasLength(1));
     expect(json['detailLevel'], 'summary');
     expect(
       (json['foods'] as List<Object?>).single,
       isA<Map<String, Object?>>(),
     );
+  });
+
+  test('custom export directory is honored', () async {
+    final documentRoot = await Directory.systemTemp.createTemp('export-docs');
+    final customRoot = await Directory.systemTemp.createTemp('export-custom');
+    addTearDown(() async {
+      if (documentRoot.existsSync()) {
+        await documentRoot.delete(recursive: true);
+      }
+      if (customRoot.existsSync()) {
+        await customRoot.delete(recursive: true);
+      }
+    });
+
+    final repository = MemoryFoodRepository(seedItems: [_salmon()]);
+    final service = FoodCatalogExportService(
+      repository: repository,
+      documentsDirectoryResolver: () async => documentRoot,
+      exportDirectoryPathResolver: () async => customRoot.path,
+    );
+
+    final artifact = await service.exportSearchResults(
+      query: 'salmon',
+      format: ExportFormat.json,
+      detailLevel: ExportDetailLevel.summary,
+    );
+
+    expect(artifact.path, startsWith(customRoot.path));
   });
 
   test(

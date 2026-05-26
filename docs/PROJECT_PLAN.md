@@ -135,6 +135,52 @@ Reference architecture detail:
 - minimal home-page export UI
 - export verification coverage
 
+#### Phase M/P: Budget Governance And Operations Surface
+
+- `SourceCapabilityRegistry`
+- `SourceRoutingService`
+- `StorageBudgetManager`
+- `ModelBudgetController`
+- repository operations reads for fetch jobs, artifacts, and storage paths
+- artifact soft removal
+- independent Operations page for jobs, artifacts, importer diagnostics, and budgets
+- New Zealand surfaced as blocked in operational diagnostics
+
+#### Phase O/P2: Data Quality Review And Observation-Level Search
+
+- read-only merge review issue surface in Operations
+- low-confidence, category-conflict, rejected-candidate, and nutrient-variance issue detection
+- advanced local search query model
+- country/source/category filters
+- nutrient range filters with presets
+- detail nutrient source comparison
+- DTO support for nutrient comparisons
+
+#### Phase Q: Manual Data Governance Writeback
+
+- manual merge/split/override actions from Operations review issues
+- source-record merge into an existing canonical food
+- source-record split into a new canonical food
+- canonical display/category/country/description/serving override
+- manual governance log persistence
+- source-level merge audit update for manual actions
+- SQLite and Memory repository parity for governance writeback
+
+#### Phase N/R: AI Cautious Expansion And Production Engineering
+
+- SQLite `app_meta` settings persistence
+- Settings page for Ollama endpoint/model, model budget, storage budget, export directory, and source enablement
+- runtime construction from persisted settings for Ollama, model budget, storage budget, export service, and source routing
+- cautious AI suggestion services for source routing, merge issue explanation, and export summaries
+- all AI output remains logged and non-authoritative
+- persistent export history
+- system share wrapper for exported files
+- Operations export history surface
+- GitHub Actions CI for analyze, tests, importer targeted tests, Web build, and Web artifact upload
+- release packaging notes for Web, Android, and macOS
+- English public README and repository governance files for GitHub publication
+- MIT source-code license boundary plus source-data notice
+
 ### In Progress
 
 - No active in-progress phase is open right now.
@@ -159,34 +205,33 @@ Status update:
 - Australia AFCD importer implemented
 - France CIQUAL importer implemented
 - Denmark Frida importer implemented
+- Germany BLS importer implemented
+- Italy CREA web importer implemented
 - importer registry and local scaffold queue implemented
 - New Zealand FOODfiles is blocked for the current architecture because its Terms of Use require original and unaltered presentation of the data
-- next actionable importer sequence now starts at Germany
+- Germany and Italy importer verification is complete after integrating the recent automation outputs
+- Spain BEDCA is blocked because the queued `single_excel` source shape does not match the official public web/database path, and BEDCA use conditions require source attribution plus preservation of original meaning before normalized importer/export use
+- Finland Fineli is blocked because the official open-data URL currently redirects to THL maintenance, preventing verification of the CSV package and current license path
 
 ## Remaining Strategic Phases
 
 ### Phase M: Budget And Storage Governance
 
-Implement:
+Status:
 
-- `StorageBudgetManager`
-- `ModelBudgetController`
-- more explicit source-routing heuristics
-
-Goals:
-
-- constrain disk growth
-- constrain local model costs
-- avoid uncontrolled fetch amplification
+- completed as the first budget-governance pass
+- defaults are constructor-configurable but not yet exposed through Settings
+- automatic route remains intentionally limited to USDA, Canada CNF, UK CoFID, and Japan MEXT
 
 ### Phase N: AI Assist Expansion
 
-Potential additions:
+Status:
 
-- source routing assistance
-- merge candidate review assistance
-- dedupe suggestion support
-- export summarization
+- completed first cautious expansion pass
+- source routing assistance is suggestion-only and still constrained by source capabilities and settings
+- merge candidate review assistance is explanation-only and does not write merge state
+- export summarization writes only export history summary text
+- all AI output is logged through `ai_suggestion_log` and constrained by `ModelBudgetController`
 
 Hard limits:
 
@@ -195,13 +240,55 @@ Hard limits:
 
 ### Phase O: Observation-Level And Advanced Search
 
-Potential additions:
+Status:
 
-- nutrient range filters
-- observation-aware source comparison
-- more advanced alias and multilingual search
+- completed first pass
+- advanced filters are local-only
+- nutrient range search uses provenance observations with legacy snapshot fallback
+- detail panel compares source-level nutrient observations
+- future work can add saved filters and more scalable SQL-native planning
 
 ### Phase P: Review And Operations Surfaces
+
+Status:
+
+- first Operations page completed
+- fetch jobs, dataset artifacts, importer diagnostics, and budgets are visible
+- failed automatic-source jobs can be retried
+- artifact delete is soft-delete only
+- data quality review issues are visible
+- export history is visible
+- manual merge/split/override writeback is implemented as a first-pass controlled workflow
+- manual governance actions are logged and visible in Operations
+
+### Phase Q: Manual Governance
+
+Status:
+
+- completed first writeback pass
+- manual merge moves a source record under an existing canonical food and refreshes snapshots
+- manual split creates a new canonical food for a source record and refreshes snapshots
+- manual override persists curated canonical display/category/country/description/serving fields
+- manual actions write governance logs and source-level merge audit entries
+
+Remaining hardening:
+
+- undo/redo is not implemented
+- batch review queues are not implemented
+- role-based governance permissions are not implemented
+- dedicated conflict resolution workspace is not implemented
+
+### Phase R: Production Release Engineering
+
+Status:
+
+- GitHub Actions CI added for analyze, test, targeted importer tests, and Web build artifact
+- release packaging notes added
+- Web artifact builds locally and in CI definition
+- public GitHub repository materials are prepared in English
+- `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `SECURITY.md`, and `CODE_OF_CONDUCT.md` are present
+- Android/macOS release signing/notarization are documented but not automated
+- no formal public data-product release until license governance is complete
 
 ### Source Expansion Sequence
 
@@ -212,10 +299,10 @@ Recommended importer sequence:
 3. New Zealand, blocked pending legal/product decision
 4. France, completed
 5. Denmark, completed
-6. Germany
-7. Italy
-8. Spain
-9. Finland
+6. Germany, completed
+7. Italy, completed
+8. Spain, blocked pending web/API and license/product review
+9. Finland, blocked while official open-data path is under maintenance
 
 Constraints:
 
@@ -237,6 +324,13 @@ Potential additions:
 - Canonical merge remains deterministic until an explicit later phase replaces or augments it.
 - `foods` stays as the fast canonical snapshot model.
 - Background enrichment stays resource-controlled.
+- New importer sources stay manual-only until source capability metadata explicitly enables automatic routing.
+- Artifact deletion remains soft-delete unless a future destructive cleanup phase is approved.
+- Advanced filters remain local-only and must not trigger proactive fetching.
+- Data quality review may write manual merge/split/override decisions only through the controlled governance workflow.
+- AI remains suggestion-only and must not write nutrition facts or authoritative canonical fields.
+- Settings persist through SQLite `app_meta`; first-pass runtime service changes apply on next app start unless explicitly hot-reloaded by a later phase.
+- CI must keep `flutter analyze`, `flutter test`, source importer targeted tests, and Web build green.
 
 ## Required Verification For Future Phase Work
 
@@ -278,4 +372,24 @@ Every future agent that changes project scope, phase ordering, implementation st
 - Advanced the next actionable importer target to Denmark
 - Implemented Denmark Frida importer
 - Kept Denmark auto-download disabled because Frida sends dataset links through an official email form
-- Advanced the next actionable importer target to Germany
+- Integrated Germany BLS importer implementation from the automation work and verified parser/sync tests
+- Integrated a live Italy CREA / AlimentiNUTrizione importer against the official HTML search/detail portal and verified mocked parser/sync tests
+- Removed Germany scaffold placeholder leftovers and fixed Italy test response encoding for UTF-8 labels/units
+- Marked Germany and Italy queue items completed
+- Implemented Phase M/P budget governance and operations surface
+- Added source capability routing, storage/model budget controls, operations diagnostics, artifact soft removal, and automatic-source retry support
+- Marked New Zealand as explicitly blocked in runtime source status
+- Verified with `flutter analyze` and `flutter test`
+- Implemented Phase O/P2 data quality review and observation-level search
+- Added advanced local filters, nutrient range search, review issue derivation, and nutrient source comparison
+- Verified with `flutter analyze` and `flutter test`
+- Implemented Phase N/R AI cautious expansion and production engineering
+- Added SQLite-backed Settings, cautious AI suggestion services, export history, share support, CI workflow, and release packaging notes
+- Verified with `flutter analyze`, `flutter test`, `flutter test test/domain/source_importers_test.dart`, and `flutter build web`
+- Integrated recent worktree automation outputs for Germany and Italy
+- Verified with `flutter analyze`, targeted Germany/Italy importer tests, `flutter test`, and `flutter build web`
+- Implemented Phase Q manual data governance writeback
+- Added manual merge, split, override, governance logs, manual merge audit updates, and Operations review actions
+- Verified with `flutter analyze`, `flutter test test/domain/manual_governance_test.dart test/operations_page_test.dart`, `flutter test`, and `flutter build web`
+- Prepared GitHub publication materials in English
+- Added MIT code license, source-data notice, contribution guide, security policy, and code of conduct

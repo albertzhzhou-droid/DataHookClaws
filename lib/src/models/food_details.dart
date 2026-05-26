@@ -29,6 +29,106 @@ class FoodDetails {
 
   bool get hasProvenance =>
       sourceRecords.isNotEmpty || nutrientObservations.isNotEmpty;
+
+  List<NutrientComparisonView> get nutrientComparisons {
+    final sourceById = {for (final source in sourceRecords) source.id: source};
+    final observationsByLabel = <String, List<NutrientObservationView>>{};
+    for (final observation in nutrientObservations) {
+      observationsByLabel
+          .putIfAbsent(observation.canonicalLabel, () => [])
+          .add(observation);
+    }
+    final labels = <String>{
+      ...aggregatedNutrients.map((nutrient) => nutrient.label),
+      ...observationsByLabel.keys,
+    }.toList()..sort();
+
+    return labels
+        .map((label) {
+          Nutrient? aggregated;
+          for (final nutrient in aggregatedNutrients) {
+            if (nutrient.label == label) {
+              aggregated = nutrient;
+              break;
+            }
+          }
+          final observations =
+              observationsByLabel[label] ?? const <NutrientObservationView>[];
+          final values = observations.map((item) => item.amount).toList();
+          final varianceStatus = values.isEmpty
+              ? NutrientVarianceStatus.missing
+              : (_hasMeaningfulVariance(values)
+                    ? NutrientVarianceStatus.differs
+                    : NutrientVarianceStatus.consistent);
+          return NutrientComparisonView(
+            canonicalLabel: label,
+            aggregated: aggregated,
+            observations: observations
+                .map(
+                  (observation) => NutrientSourceObservationView(
+                    sourceRecordId: observation.sourceRecordId,
+                    sourceName:
+                        sourceById[observation.sourceRecordId]?.sourceName ??
+                        observation.sourceRecordId,
+                    country:
+                        sourceById[observation.sourceRecordId]?.country ?? '',
+                    amount: observation.amount,
+                    unit: observation.unit,
+                    originalUnit: observation.originalUnit,
+                  ),
+                )
+                .toList(growable: false),
+            varianceStatus: varianceStatus,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  bool _hasMeaningfulVariance(List<double> values) {
+    if (values.length < 2) {
+      return false;
+    }
+    final min = values.reduce((left, right) => left < right ? left : right);
+    final max = values.reduce((left, right) => left > right ? left : right);
+    if (max == 0) {
+      return min != 0;
+    }
+    return ((max - min).abs() / max.abs()) > 0.2;
+  }
+}
+
+enum NutrientVarianceStatus { consistent, differs, missing }
+
+class NutrientComparisonView {
+  const NutrientComparisonView({
+    required this.canonicalLabel,
+    required this.aggregated,
+    required this.observations,
+    required this.varianceStatus,
+  });
+
+  final String canonicalLabel;
+  final Nutrient? aggregated;
+  final List<NutrientSourceObservationView> observations;
+  final NutrientVarianceStatus varianceStatus;
+}
+
+class NutrientSourceObservationView {
+  const NutrientSourceObservationView({
+    required this.sourceRecordId,
+    required this.sourceName,
+    required this.country,
+    required this.amount,
+    required this.unit,
+    required this.originalUnit,
+  });
+
+  final String sourceRecordId;
+  final String sourceName;
+  final String country;
+  final double amount;
+  final String unit;
+  final String originalUnit;
 }
 
 class SourceRecordView {

@@ -8,12 +8,14 @@ class OllamaClient {
     this.endpoint = 'http://127.0.0.1:11434',
     this.model = 'llama3',
     this.timeout = const Duration(seconds: 3),
+    this.numPredict = 256,
   }) : _client = client ?? http.Client();
 
   final http.Client _client;
   final String endpoint;
   final String model;
   final Duration timeout;
+  final int numPredict;
 
   Future<String> generateJson({required String prompt}) async {
     final uri = Uri.parse('$endpoint/api/generate');
@@ -26,6 +28,7 @@ class OllamaClient {
             'prompt': prompt,
             'stream': false,
             'format': 'json',
+            'options': {'num_predict': numPredict},
           }),
         )
         .timeout(timeout);

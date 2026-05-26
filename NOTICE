@@ -1,0 +1,32 @@
+# DataHookClaws Notice
+
+DataHookClaws is a local-first software project for importing, normalizing,
+searching, auditing, and exporting nutrition records from official source
+systems. This repository licenses the project source code under the MIT License.
+
+The MIT License does not apply to third-party official nutrition datasets,
+official web pages, trademarks, database rights, or downloaded artifacts. Those
+materials remain governed by their respective source owners and terms.
+
+Current source integrations include or reference:
+
+- USDA FoodData Central
+- Canadian Nutrient File
+- UK Composition of Foods Integrated Dataset
+- Japan Standard Tables of Food Composition
+- Swiss Food Composition Database
+- France CIQUAL
+- Denmark Frida
+- Australian Food Composition Database
+- Germany BLS
+- Italy CREA / AlimentiNUTrizione
+
+Some sources are intentionally blocked or manual-only where redistribution,
+normalization, or automated fetching would require additional legal/product
+review. The application records provenance and merge audit information to keep
+source boundaries visible, but users remain responsible for checking original
+source terms before redistributing exported data.
+
+DataHookClaws is not medical advice, nutrition advice, or an official
+government publication. Verify critical nutrition facts against the original
+authoritative source before relying on them.

@@ -4,6 +4,7 @@ import '../models/food_item.dart';
 import '../models/query_expansion_result.dart';
 import '../models/search_session_state.dart';
 import 'background_enrichment_queue.dart';
+import 'ai_assist_services.dart';
 import 'fetch_budget_planner.dart';
 import 'foreground_fetch_runner.dart';
 import 'query_expansion_service.dart';
@@ -15,17 +16,20 @@ class SearchOrchestrator {
     required FetchBudgetPlanner budgetPlanner,
     required QueryExpansionService queryExpansionService,
     required BackgroundEnrichmentQueue enrichmentQueue,
+    SourceRoutingSuggestionService? sourceRoutingSuggestionService,
   }) : _repository = repository,
        _foregroundFetchRunner = foregroundFetchRunner,
        _budgetPlanner = budgetPlanner,
        _queryExpansionService = queryExpansionService,
-       _enrichmentQueue = enrichmentQueue;
+       _enrichmentQueue = enrichmentQueue,
+       _sourceRoutingSuggestionService = sourceRoutingSuggestionService;
 
   final FoodRepository _repository;
   final ForegroundFetchRunner _foregroundFetchRunner;
   final FetchBudgetPlanner _budgetPlanner;
   final QueryExpansionService _queryExpansionService;
   final BackgroundEnrichmentQueue _enrichmentQueue;
+  final SourceRoutingSuggestionService? _sourceRoutingSuggestionService;
   final Map<String, QueryExpansionResult> _expansionCache = {};
 
   Stream<EnrichmentQueueState> get currentEnrichmentState =>
@@ -60,10 +64,19 @@ class SearchOrchestrator {
 
     final expansion = await _queryExpansionService.expand(query);
     _expansionCache[query] = expansion;
+    final sourceHints = await _sourceHintsWithRoutingSuggestion(
+      query: expansion.primaryQuery,
+      sourceHints: expansion.sourceHints,
+    );
+    final recentFailures = await _repository.getRecentFetchJobs(
+      status: 'failure',
+      limit: 20,
+    );
     final plan = _budgetPlanner.plan(
       query: expansion.primaryQuery,
       localHitCount: localResults.length,
-      sourceHints: expansion.sourceHints,
+      sourceHints: sourceHints,
+      recentFailures: recentFailures,
     );
 
     if (!plan.shouldFetch) {
@@ -135,10 +148,19 @@ class SearchOrchestrator {
     final expansion =
         _expansionCache[query] ?? await _queryExpansionService.expand(query);
     _expansionCache[query] = expansion;
-
-    final remainingImporterIds = _remainingImporterIds(
+    final sourceHints = await _sourceHintsWithRoutingSuggestion(
+      query: expansion.primaryQuery,
       sourceHints: expansion.sourceHints,
+    );
+
+    final recentFailures = await _repository.getRecentFetchJobs(
+      status: 'failure',
+      limit: 20,
+    );
+    final remainingImporterIds = _budgetPlanner.routeRemainingImporters(
+      sourceHints: sourceHints,
       alreadyTriedImporterIds: alreadyTriedImporterIds,
+      recentFailures: recentFailures,
     );
 
     await _enrichmentQueue.schedule(
@@ -158,28 +180,30 @@ class SearchOrchestrator {
     await _enrichmentQueue.cancel(query);
   }
 
+  Future<List<String>> _sourceHintsWithRoutingSuggestion({
+    required String query,
+    required List<String> sourceHints,
+  }) async {
+    final service = _sourceRoutingSuggestionService;
+    if (service == null) {
+      return sourceHints;
+    }
+    return service.suggestOrder(
+      query: query,
+      candidateImporterIds: [
+        ...sourceHints,
+        ..._budgetPlanner.prioritizedImporters.where(
+          (id) => !sourceHints.contains(id),
+        ),
+      ],
+    );
+  }
+
   List<FoodItem> _merge(List<FoodItem> left, List<FoodItem> right) {
     final merged = <String, FoodItem>{};
     for (final item in [...left, ...right]) {
       merged[item.id] = item;
     }
     return merged.values.toList(growable: false);
-  }
-
-  List<String> _remainingImporterIds({
-    required List<String> sourceHints,
-    required List<String> alreadyTriedImporterIds,
-  }) {
-    final alreadyTried = alreadyTriedImporterIds.toSet();
-    final hinted = sourceHints
-        .where(_budgetPlanner.prioritizedImporters.contains)
-        .where((item) => !alreadyTried.contains(item))
-        .toList(growable: false);
-    return [
-      ...hinted,
-      ..._budgetPlanner.prioritizedImporters.where(
-        (item) => !alreadyTried.contains(item) && !hinted.contains(item),
-      ),
-    ].toList(growable: false);
   }
 }
