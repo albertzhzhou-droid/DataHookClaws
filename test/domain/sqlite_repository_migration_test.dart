@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:data_hook_claws/src/data/sqlite_food_repository.dart';
 import 'package:data_hook_claws/src/models/fetch_job_entry.dart';
 import 'package:data_hook_claws/src/models/food_item.dart';
+import 'package:data_hook_claws/src/models/food_search_query.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -180,6 +181,52 @@ void main() {
     expect(jobs, hasLength(1));
     expect(jobs.single.importerId, 'uk-mccance');
     expect(latest?.id, 'enrichment-1');
+    expect(await repository.getRecentFetchJobs(limit: -1), isEmpty);
+  });
+
+  test('negative search limits return empty pages', () async {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'sqlite-negative-limits',
+    );
+    addTearDown(() async {
+      if (tempDirectory.existsSync()) {
+        await tempDirectory.delete(recursive: true);
+      }
+    });
+
+    final repository = SqliteFoodRepository(
+      documentsDirectoryResolver: () async => tempDirectory,
+    );
+    await repository.initialize();
+    await repository.upsertFoods([
+      FoodItem(
+        id: 'canada-cnf:salmon',
+        name: 'Atlantic Salmon',
+        category: 'Seafood',
+        country: 'Canada',
+        sourceName: 'CNF',
+        description: 'salmon',
+        servingBasis: 'Per 100 g',
+        tags: const [],
+        nutrients: const [],
+        lastUpdated: DateTime(2026, 5, 23),
+      ),
+    ]);
+
+    expect(
+      await repository.searchFoodsAdvanced(
+        const FoodSearchQuery(text: 'salmon'),
+        limit: -1,
+      ),
+      isEmpty,
+    );
+    expect(
+      await repository.searchFoodSummariesByCountry('Canada', limit: -1),
+      isEmpty,
+    );
   });
 
   test('returns empty provenance observations without throwing', () async {

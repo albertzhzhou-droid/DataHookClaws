@@ -40,6 +40,26 @@ void main() {
     expect(result.usedModel, isFalse);
     expect(logs, ['query-expansion-fallback']);
   });
+
+  test(
+    'sanitizes invalid runtime budgets while preserving zero-call disable',
+    () {
+      final controller = ModelBudgetController(
+        maxCallsPerMinute: -1,
+        timeout: Duration.zero,
+        maxTokens: 0,
+        failureCooldown: const Duration(seconds: -1),
+      );
+
+      expect(controller.maxCallsPerMinute, 6);
+      expect(controller.timeout, const Duration(seconds: 3));
+      expect(controller.maxTokens, 256);
+      expect(controller.failureCooldown, const Duration(seconds: 30));
+
+      final disabled = ModelBudgetController(maxCallsPerMinute: 0);
+      expect(disabled.evaluate('salmon').allowed, isFalse);
+    },
+  );
 }
 
 class _CountingOllamaClient extends OllamaClient {

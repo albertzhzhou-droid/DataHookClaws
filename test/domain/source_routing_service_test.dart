@@ -55,4 +55,26 @@ void main() {
 
     expect(plan.importerIds, ['canada-cnf', 'uk-mccance']);
   });
+
+  test('clamps a negative route budget to an empty route', () {
+    final route = SourceRoutingService(registry: registry).route(
+      defaultOrder: const ['usda', 'canada-cnf'],
+      sourceHints: const [],
+      recentFailures: const [],
+      maxImporters: -1,
+    );
+
+    expect(route, isEmpty);
+  });
+
+  test('deduplicates repeated defaults and source hints', () {
+    final route = SourceRoutingService(registry: registry).route(
+      defaultOrder: const ['usda', 'usda', 'canada-cnf'],
+      sourceHints: const ['usda', 'usda'],
+      recentFailures: const [],
+      maxImporters: 3,
+    );
+
+    expect(route, ['usda', 'canada-cnf']);
+  });
 }

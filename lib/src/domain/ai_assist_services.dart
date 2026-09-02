@@ -35,7 +35,7 @@ abstract class AiAssistServiceBase {
   }) async {
     final decision = _modelBudgetController.evaluate(query);
     if (!decision.allowed) {
-      await persistFallback(
+      await _persistFallbackBestEffort(
         query: query,
         suggestionType: suggestionType,
         inputPayload: inputPayload,
@@ -44,25 +44,63 @@ abstract class AiAssistServiceBase {
       return null;
     }
 
+    String response;
     try {
       _modelBudgetController.recordCall();
-      final response = await _ollamaClient.generateJson(prompt: prompt);
-      await persist(
-        query: query,
-        suggestionType: suggestionType,
-        inputPayload: inputPayload,
-        outputPayload: response,
-      );
-      return response;
+      response = await _ollamaClient.generateJson(prompt: prompt);
     } catch (_) {
       _modelBudgetController.recordFailure();
-      await persistFallback(
+      await _persistFallbackBestEffort(
         query: query,
         suggestionType: suggestionType,
         inputPayload: inputPayload,
         reason: 'Ollama request failed.',
       );
       return null;
+    }
+
+    await _persistBestEffort(
+      query: query,
+      suggestionType: suggestionType,
+      inputPayload: inputPayload,
+      outputPayload: response,
+    );
+    return response;
+  }
+
+  Future<void> _persistBestEffort({
+    required String query,
+    required String suggestionType,
+    required Map<String, Object?> inputPayload,
+    required String outputPayload,
+  }) async {
+    try {
+      await persist(
+        query: query,
+        suggestionType: suggestionType,
+        inputPayload: inputPayload,
+        outputPayload: outputPayload,
+      );
+    } catch (_) {
+      // AI output remains usable when supplemental suggestion logging fails.
+    }
+  }
+
+  Future<void> _persistFallbackBestEffort({
+    required String query,
+    required String suggestionType,
+    required Map<String, Object?> inputPayload,
+    required String reason,
+  }) async {
+    try {
+      await persistFallback(
+        query: query,
+        suggestionType: suggestionType,
+        inputPayload: inputPayload,
+        reason: reason,
+      );
+    } catch (_) {
+      // Deterministic caller fallbacks remain usable when logging fails.
     }
   }
 

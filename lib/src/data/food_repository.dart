@@ -9,6 +9,7 @@ import '../models/food_summary.dart';
 import '../models/import_log_entry.dart';
 import '../models/manual_governance.dart';
 import '../models/merge_review_issue.dart';
+import '../models/merge_review_issue_query.dart';
 import '../models/storage_paths.dart';
 
 abstract class FoodRepository {
@@ -38,6 +39,10 @@ abstract class FoodRepository {
   Future<FoodDetails?> getFoodDetails(String canonicalFoodId);
 
   Future<List<MergeReviewIssue>> getMergeReviewIssues({int limit = 100});
+
+  Future<MergeReviewIssuePage> queryMergeReviewIssues(
+    MergeReviewIssueQuery query,
+  );
 
   Future<void> mergeSourceRecord({
     required String sourceRecordId,

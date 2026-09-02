@@ -61,8 +61,24 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _load() async {
-    final settings = await widget.settingsService.load();
-    final paths = await widget.storagePathsLoader();
+    late final AppSettings settings;
+    String? message;
+    try {
+      settings = await widget.settingsService.load();
+    } catch (error) {
+      settings = widget.settingsService.defaultSettings();
+      message = 'Could not load settings; using defaults: $error';
+    }
+
+    StoragePaths? paths;
+    try {
+      paths = await widget.storagePathsLoader();
+    } catch (error) {
+      message = message == null
+          ? 'Could not load storage paths: $error'
+          : '$message\nCould not load storage paths: $error';
+    }
+
     if (!mounted) {
       return;
     }
@@ -81,6 +97,7 @@ class _SettingsPageState extends State<SettingsPage> {
       _exportBudgetController.text = '${settings.exportBudgetBytes}';
       _cacheBudgetController.text = '${settings.cacheBudgetBytes}';
       _loading = false;
+      _message = message;
     });
   }
 
@@ -113,15 +130,41 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
       sourceEnabled: _sourceEnabled,
     );
-    await widget.settingsService.save(next);
+    late final AppSettings saved;
+    try {
+      saved = await widget.settingsService.save(next);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _message = 'Could not save settings: $error';
+      });
+      return;
+    }
     if (!mounted) {
       return;
     }
     setState(() {
-      _settings = next;
+      _applySettingsToForm(saved);
       _message =
           'Settings saved. Runtime routing changes apply on next app start.';
     });
+  }
+
+  void _applySettingsToForm(AppSettings settings) {
+    _settings = settings;
+    _sourceEnabled = Map<String, bool>.from(settings.sourceEnabled);
+    _ollamaEndpointController.text = settings.ollamaEndpoint;
+    _ollamaModelController.text = settings.ollamaModel;
+    _maxCallsController.text = '${settings.modelMaxCallsPerMinute}';
+    _timeoutController.text = '${settings.modelTimeoutSeconds}';
+    _maxTokensController.text = '${settings.modelMaxTokens}';
+    _exportDirectoryController.text = settings.exportDirectory;
+    _databaseBudgetController.text = '${settings.databaseBudgetBytes}';
+    _artifactBudgetController.text = '${settings.artifactBudgetBytes}';
+    _exportBudgetController.text = '${settings.exportBudgetBytes}';
+    _cacheBudgetController.text = '${settings.cacheBudgetBytes}';
   }
 
   @override

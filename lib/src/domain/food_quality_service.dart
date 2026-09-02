@@ -4,6 +4,7 @@ import '../models/food_item.dart';
 import '../models/food_search_query.dart';
 import '../models/food_summary.dart';
 import '../models/merge_review_issue.dart';
+import '../models/merge_review_issue_identity.dart';
 
 class FoodQualityService {
   FoodQualityService({TextNormalizer? textNormalizer})
@@ -73,6 +74,7 @@ class FoodQualityService {
             reason: audit.reason,
             candidateSummary: _candidateSummary(audit.candidateEvaluations),
             createdAt: audit.createdAt,
+            identitySubjectKey: 'audit',
           ),
         );
       }
@@ -90,6 +92,8 @@ class FoodQualityService {
             candidateSummary: 'Candidate ${candidate.candidateCanonicalFoodId}',
             createdAt: audit.createdAt,
             suggestedCanonicalFoodId: candidate.candidateCanonicalFoodId,
+            identitySubjectKey:
+                'candidate:${candidate.candidateCanonicalFoodId}',
           ),
         );
       }
@@ -103,6 +107,7 @@ class FoodQualityService {
             reason: audit.reason,
             candidateSummary: _candidateSummary(audit.candidateEvaluations),
             createdAt: audit.createdAt,
+            identitySubjectKey: 'audit',
           ),
         );
       }
@@ -129,6 +134,8 @@ class FoodQualityService {
               )
               .join(' | '),
           createdAt: details.lastAggregatedAt,
+          identitySourceRecordId: '',
+          identitySubjectKey: 'nutrient:${comparison.canonicalLabel}',
         ),
       );
     }
@@ -140,9 +147,32 @@ class FoodQualityService {
       if (severity != 0) {
         return severity;
       }
-      return right.createdAt.compareTo(left.createdAt);
+      final createdAt = right.createdAt.compareTo(left.createdAt);
+      if (createdAt != 0) {
+        return createdAt;
+      }
+      final id = left.id.compareTo(right.id);
+      if (id != 0) {
+        return id;
+      }
+      final reason = left.reason.compareTo(right.reason);
+      if (reason != 0) {
+        return reason;
+      }
+      final candidateSummary = left.candidateSummary.compareTo(
+        right.candidateSummary,
+      );
+      if (candidateSummary != 0) {
+        return candidateSummary;
+      }
+      return (left.suggestedCanonicalFoodId ?? '').compareTo(
+        right.suggestedCanonicalFoodId ?? '',
+      );
     });
-    return issues;
+    final seenIdentities = <String>{};
+    return issues
+        .where((issue) => seenIdentities.add(issue.id))
+        .toList(growable: false);
   }
 
   bool _matchesText(FoodItem item, FoodDetails? details, String query) {
@@ -231,10 +261,17 @@ class FoodQualityService {
     required String reason,
     required String candidateSummary,
     required DateTime createdAt,
+    required String identitySubjectKey,
+    String? identitySourceRecordId,
     String? suggestedCanonicalFoodId,
   }) {
     return MergeReviewIssue(
-      id: '${details.id}:${sourceRecordId.isEmpty ? type.name : sourceRecordId}:${type.name}:$candidateSummary',
+      id: MergeReviewIssueIdentity(
+        canonicalFoodId: details.id,
+        sourceRecordId: identitySourceRecordId ?? sourceRecordId,
+        type: type,
+        subjectKey: identitySubjectKey,
+      ).encode(),
       canonicalFoodId: details.id,
       sourceRecordId: sourceRecordId,
       type: type,

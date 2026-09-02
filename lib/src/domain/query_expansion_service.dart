@@ -32,43 +32,37 @@ class QueryExpansionService {
     final budgetDecision = _modelBudgetController.evaluate(query);
     if (!budgetDecision.allowed) {
       final fallback = _fallback(query);
-      await _persistFallback(query, fallback, budgetDecision.reason);
+      await _persistFallbackBestEffort(query, fallback, budgetDecision.reason);
       return fallback;
     }
 
+    late final QueryExpansionResult result;
     try {
       _modelBudgetController.recordCall();
       final response = await _ollamaClient.generateJson(
         prompt: _buildPrompt(query),
       );
       final parsed = jsonDecode(response) as Map<String, dynamic>;
-      final result = QueryExpansionResult(
+      result = QueryExpansionResult(
         primaryQuery: query,
         aliases: _stringList(parsed['aliases']),
         translations: _stringList(parsed['translations']),
         sourceHints: _mapSourceHints(_stringList(parsed['sourceHints'])),
         usedModel: true,
       );
-
-      await persistSuggestion(
-        AiSuggestionLogEntry(
-          id: 'ai-${DateTime.now().microsecondsSinceEpoch}',
-          query: query,
-          suggestionType: 'query-expansion',
-          inputPayload: jsonEncode({'query': query}),
-          outputPayload: result.toJsonString(),
-          modelName: _ollamaClient.model,
-          createdAt: DateTime.now(),
-        ),
-      );
-
-      return result;
     } catch (_) {
       _modelBudgetController.recordFailure();
       final fallback = _fallback(query);
-      await _persistFallback(query, fallback, 'Ollama request failed.');
+      await _persistFallbackBestEffort(
+        query,
+        fallback,
+        'Ollama request failed.',
+      );
       return fallback;
     }
+
+    await _persistResultBestEffort(query, result);
+    return result;
   }
 
   Future<void> _persistFallback(
@@ -87,6 +81,39 @@ class QueryExpansionService {
         createdAt: DateTime.now(),
       ),
     );
+  }
+
+  Future<void> _persistResultBestEffort(
+    String query,
+    QueryExpansionResult result,
+  ) async {
+    try {
+      await persistSuggestion(
+        AiSuggestionLogEntry(
+          id: 'ai-${DateTime.now().microsecondsSinceEpoch}',
+          query: query,
+          suggestionType: 'query-expansion',
+          inputPayload: jsonEncode({'query': query}),
+          outputPayload: result.toJsonString(),
+          modelName: _ollamaClient.model,
+          createdAt: DateTime.now(),
+        ),
+      );
+    } catch (_) {
+      // Query expansion remains usable when supplemental logging fails.
+    }
+  }
+
+  Future<void> _persistFallbackBestEffort(
+    String query,
+    QueryExpansionResult fallback,
+    String reason,
+  ) async {
+    try {
+      await _persistFallback(query, fallback, reason);
+    } catch (_) {
+      // Deterministic expansion remains usable when fallback logging fails.
+    }
   }
 
   QueryExpansionResult _fallback(String query) {

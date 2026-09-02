@@ -6,12 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze-test-web:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE: ${{ vars.DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -20,7 +32,7 @@ jobs:
           cache: true
 
       - name: Install dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Analyze
         run: flutter analyze
@@ -31,11 +43,152 @@ jobs:
       - name: Source importer tests
         run: flutter test test/domain/source_importers_test.dart test/domain/it_crea_importer_test.dart
 
+      - name: Prepare CI Dart package config for local scripts
+        run: |
+          mkdir -p /tmp/dhc_dart_checks_home/.dart_tool
+          cat > /tmp/dhc_github_dart_tool_packages.json <<EOF
+          {
+            "configVersion": 2,
+            "packages": [
+              {
+                "name": "data_hook_claws",
+                "rootUri": "file://${{ github.workspace }}",
+                "packageUri": "lib/",
+                "languageVersion": "3.10"
+              }
+            ],
+            "generator": "dhc_github_ci_checks"
+          }
+          EOF
+
+      - name: Release metadata preflight
+        run: |
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json \
+            tool/check_release_metadata.dart --require-clean
+
+      - name: Compare replay draft cleanup regression check
+        run: |
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/check_compare_replay_draft_cleanup.dart
+
+      - name: Compare unit normalization smoke check
+        run: |
+          DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE="${DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE:-tool/fixtures/compare_unit_normalization_cases.json}"
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE="$DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE" \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/check_compare_unit_normalization.dart
+
+      - name: Compare accessibility regression check
+        env:
+          DHC_A11Y_TREND_DASHBOARD_DAILY_LIMIT: "14"
+          DHC_A11Y_TREND_DASHBOARD_WEEKLY_LIMIT: "8"
+          DHC_A11Y_TREND_DASHBOARD_REGRESSION_WINDOW: "2"
+          DHC_A11Y_TREND_TREND_NOISE_WINDOW: "2"
+          DHC_A11Y_TREND_RECURRENCE_WINDOW: "2"
+          DHC_A11Y_TREND_MAX_RECURRENCE_COUNT: "0"
+          DHC_A11Y_TREND_MAX_ABSENCE_RUNS: "999"
+        run: |
+          set -o pipefail
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/check_compare_accessibility.dart \
+            | tee /tmp/compare_replay_accessibility_check.log
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/parse_compare_accessibility_report.dart \
+            /tmp/compare_replay_accessibility_check.log \
+            | tee /tmp/compare_replay_accessibility_parsed.log
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/analyze_compare_accessibility_trends.dart \
+            /tmp/compare_replay_accessibility_parsed.log \
+            --window-runs 7 \
+            --history-file /tmp/compare_replay_accessibility_trend_history.jsonl \
+            --history-max-entries 50 \
+            --output-json
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/build_compare_accessibility_trend_digest.dart \
+            /tmp/compare_replay_accessibility_trend_history.jsonl \
+            --scope compare_replay_accessibility \
+            --output-json
+
+      - name: Compare replay prompt funnel check
+        run: |
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json tool/analyze_compare_replay_prompt_funnel.dart \
+            --output-json \
+            tool/fixtures/compare_replay_prompt_funnel_trace.json
+
       - name: Build web artifact
-        run: flutter build web
+        run: flutter build web --release
+
+      - name: Generate Web artifact provenance
+        run: |
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json \
+            tool/build_release_provenance.dart \
+            --input build/web \
+            --output build/datahookclaws-web.provenance.json \
+            --artifact-name datahookclaws-web \
+            --require-web-version \
+            --require-web-shell \
+            --require-web-shell-references \
+            --require-web-root-base-href \
+            --require-web-metadata-parity \
+            --require-web-pwa-contract \
+            --require-web-pwa-identity \
+            --require-web-viewport \
+            --require-web-language \
+            --require-web-title-parity \
+            --require-web-manifest-icon-metadata \
+            --require-web-theme-color-parity \
+            --require-web-service-worker-contract \
+            --require-web-manifest \
+            --require-web-manifest-assets \
+            --revision "$GITHUB_SHA" \
+            --require-revision
+
+      - name: Verify Web artifact provenance
+        run: |
+          HOME=/tmp/dhc_dart_checks_home \
+          DART_SUPPRESS_ANALYTICS=true \
+          dart --packages=/tmp/dhc_github_dart_tool_packages.json \
+            tool/build_release_provenance.dart \
+            --input build/web \
+            --verify build/datahookclaws-web.provenance.json \
+            --artifact-name datahookclaws-web \
+            --require-web-version \
+            --require-web-shell \
+            --require-web-shell-references \
+            --require-web-root-base-href \
+            --require-web-metadata-parity \
+            --require-web-pwa-contract \
+            --require-web-pwa-identity \
+            --require-web-viewport \
+            --require-web-language \
+            --require-web-title-parity \
+            --require-web-manifest-icon-metadata \
+            --require-web-theme-color-parity \
+            --require-web-service-worker-contract \
+            --require-web-manifest \
+            --require-web-manifest-assets \
+            --revision "$GITHUB_SHA" \
+            --require-revision
 
       - name: Upload web build
         uses: actions/upload-artifact@v4
         with:
           name: datahookclaws-web
-          path: build/web
+          path: |
+            build/web
+            build/datahookclaws-web.provenance.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

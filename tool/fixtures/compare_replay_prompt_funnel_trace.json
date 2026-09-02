@@ -1,0 +1,44 @@
+[
+  {
+    "timestamp": "2026-08-16T10:00:00Z",
+    "action": "compare",
+    "details": {
+      "scopeKey": "scope:alpha",
+      "trigger": "urgent_prompt",
+      "userAction": "shown",
+      "promptSessionIndex": 1,
+      "suppressReason": ""
+    }
+  },
+  {
+    "timestamp": "2026-08-16T10:01:00Z",
+    "action": "compare",
+    "details": {
+      "scopeKey": "scope:alpha",
+      "trigger": "urgent_prompt",
+      "userAction": "suppressed",
+      "promptSessionIndex": 1,
+      "suppressReason": "cooldown_active"
+    }
+  },
+  {
+    "timestamp": "2026-08-16T10:02:00Z",
+    "action": "compare",
+    "details": {
+      "scopeKey": "scope:alpha",
+      "trigger": "manual",
+      "userAction": "manual_clear",
+      "promptSessionIndex": 1
+    }
+  },
+  {
+    "timestamp": "2026-08-16T10:03:00Z",
+    "action": "compare",
+    "details": {
+      "scopeKey": "scope:beta",
+      "trigger": "urgent_prompt",
+      "userAction": "remind_later",
+      "promptSessionIndex": 2
+    }
+  }
+]

@@ -22,7 +22,8 @@ class ForegroundFetchRunner {
       final jobId =
           'fetch-$importerId-${DateTime.now().microsecondsSinceEpoch}';
       final startedAt = DateTime.now();
-      await persistJob(
+      await _persistJobBestEffort(
+        persistJob,
         FetchJobEntry(
           id: jobId,
           query: query,
@@ -42,7 +43,8 @@ class ForegroundFetchRunner {
         );
         imported.addAll(summary.importedFoods);
         succeededSources.add(importerId);
-        await persistJob(
+        await _persistJobBestEffort(
+          persistJob,
           FetchJobEntry(
             id: jobId,
             query: query,
@@ -55,7 +57,8 @@ class ForegroundFetchRunner {
           ),
         );
       } catch (error) {
-        await persistJob(
+        await _persistJobBestEffort(
+          persistJob,
           FetchJobEntry(
             id: jobId,
             query: query,
@@ -74,6 +77,18 @@ class ForegroundFetchRunner {
       importedFoods: imported,
       succeededSources: succeededSources,
     );
+  }
+
+  Future<void> _persistJobBestEffort(
+    Future<void> Function(FetchJobEntry job) persistJob,
+    FetchJobEntry entry,
+  ) async {
+    try {
+      await persistJob(entry);
+    } catch (_) {
+      // Fetch-job history is supplemental diagnostics; it must not mask the
+      // source result or prevent later importers from running.
+    }
   }
 }
 

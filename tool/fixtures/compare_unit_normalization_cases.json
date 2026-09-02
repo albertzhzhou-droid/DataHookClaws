@@ -1,0 +1,176 @@
+{
+  "normalizationCases": [
+    {
+      "label": "mg_to_g",
+      "amount": 1500,
+      "unit": "mg",
+      "expectedNormalizedUnit": "g",
+      "expectedCanonical": "g",
+      "expectedDenominator": "",
+      "expectedScale": 0.001
+    },
+    {
+      "label": "kcal_to_kcal",
+      "amount": 1000,
+      "unit": "kcal",
+      "expectedNormalizedUnit": "kcal",
+      "expectedCanonical": "kcal",
+      "expectedDenominator": "",
+      "expectedScale": 1
+    },
+    {
+      "label": "cal_to_kcal",
+      "amount": 1000000,
+      "unit": "cal",
+      "expectedNormalizedUnit": "kcal",
+      "expectedCanonical": "kcal",
+      "expectedDenominator": "",
+      "expectedScale": 0.001
+    },
+    {
+      "label": "kcalory_to_kcal",
+      "amount": 1000,
+      "unit": "KILOCALORIES",
+      "expectedNormalizedUnit": "kcal",
+      "expectedCanonical": "kcal",
+      "expectedDenominator": "",
+      "expectedScale": 1
+    },
+    {
+      "label": "percent_basic",
+      "amount": 10,
+      "unit": "percent",
+      "expectedNormalizedUnit": "%",
+      "expectedCanonical": "%",
+      "expectedDenominator": "",
+      "expectedScale": 1
+    },
+    {
+      "label": "kj_to_kcal",
+      "amount": 4184,
+      "unit": "kJ",
+      "expectedNormalizedUnit": "kcal",
+      "expectedCanonical": "kcal",
+      "expectedDenominator": "",
+      "expectedScale": 0.2390057361
+    },
+    {
+      "label": "kjoule_to_kcal",
+      "amount": 4.184,
+      "unit": "kJoule",
+      "expectedNormalizedUnit": "kcal",
+      "expectedCanonical": "kcal",
+      "expectedDenominator": "",
+      "expectedScale": 0.2390057361
+    },
+    {
+      "label": "g_per_100g",
+      "amount": 5,
+      "unit": "g/100g",
+      "expectedNormalizedUnit": "g/100g",
+      "expectedCanonical": "g",
+      "expectedDenominator": "100g",
+      "expectedScale": 1
+    },
+    {
+      "label": "g_per_serving",
+      "amount": 12.5,
+      "unit": "g/Serving",
+      "expectedNormalizedUnit": "g/serving",
+      "expectedCanonical": "g",
+      "expectedDenominator": "serving",
+      "expectedScale": 1
+    },
+    {
+      "label": "iu_upper",
+      "amount": 100,
+      "unit": "IU",
+      "expectedNormalizedUnit": "IU",
+      "expectedCanonical": "IU",
+      "expectedDenominator": "",
+      "expectedScale": 1
+    },
+    {
+      "label": "mcg_to_g",
+      "amount": 2500,
+      "unit": "mcg",
+      "expectedNormalizedUnit": "g",
+      "expectedCanonical": "g",
+      "expectedDenominator": "",
+      "expectedScale": 0.000001
+    },
+    {
+      "label": "denominator_conflict_g_per_100g",
+      "amount": 100,
+      "unit": "g/100g",
+      "expectedNormalizedUnit": "g/100g",
+      "expectedCanonical": "g",
+      "expectedDenominator": "100g",
+      "expectedScale": 1
+    },
+    {
+      "label": "iu_plain",
+      "amount": 100,
+      "unit": "IU",
+      "expectedNormalizedUnit": "IU",
+      "expectedCanonical": "IU",
+      "expectedDenominator": "",
+      "expectedScale": 1
+    },
+    {
+      "label": "jittery_spaces_denominator",
+      "amount": 5,
+      "unit": "g /( 100 g )",
+      "expectedNormalizedUnit": "g/100g",
+      "expectedCanonical": "g",
+      "expectedDenominator": "100g",
+      "expectedScale": 1
+    }
+  ],
+  "failureCases": [
+    {
+      "label": "empty_unit",
+      "unit": ""
+    },
+    {
+      "label": "unknown_unit",
+      "unit": "mystery-unit"
+    },
+    {
+      "label": "micro_curie_unit",
+      "unit": "μCi"
+    }
+  ],
+  "comparabilityCases": [
+    {
+      "label": "mg_and_g_are_comparable",
+      "leftUnit": "mg",
+      "rightUnit": "g",
+      "expectedComparable": true
+    },
+    {
+      "label": "kcal_and_cal_are_comparable",
+      "leftUnit": "kcal",
+      "rightUnit": "cal",
+      "expectedComparable": true
+    },
+    {
+      "label": "kj_and_kcal_are_comparable",
+      "leftUnit": "kJ",
+      "rightUnit": "kcal",
+      "expectedComparable": true
+    },
+    {
+      "label": "percent_and_percent_are_comparable",
+      "leftUnit": "percent",
+      "rightUnit": "%",
+      "expectedComparable": true
+    },
+    {
+      "label": "denominator_must_match_for_mass",
+      "leftUnit": "g",
+      "rightUnit": "g/100g",
+      "expectedComparable": false
+    }
+  ]
+}

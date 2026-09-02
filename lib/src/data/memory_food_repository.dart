@@ -9,12 +9,14 @@ import '../models/food_summary.dart';
 import '../models/import_log_entry.dart';
 import '../models/manual_governance.dart';
 import '../models/merge_review_issue.dart';
+import '../models/merge_review_issue_query.dart';
 import '../models/nutrient.dart';
 import '../models/storage_paths.dart';
 import '../search/food_search_index.dart';
 import '../domain/canonical_merge_service.dart';
 import '../domain/food_quality_service.dart';
 import 'food_repository.dart';
+import 'repository_read_limits.dart';
 
 class MemoryFoodRepository implements FoodRepository {
   MemoryFoodRepository({List<FoodItem>? seedItems})
@@ -64,6 +66,10 @@ class MemoryFoodRepository implements FoodRepository {
     FoodSearchQuery query, {
     int limit = 100,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    if (safeLimit == 0) {
+      return const [];
+    }
     final matched = <FoodItem>[];
     for (final item in _items) {
       final details = _detailsByCanonicalId[item.id];
@@ -74,7 +80,7 @@ class MemoryFoodRepository implements FoodRepository {
       )) {
         matched.add(item);
       }
-      if (matched.length >= limit) {
+      if (matched.length >= safeLimit) {
         break;
       }
     }
@@ -86,9 +92,10 @@ class MemoryFoodRepository implements FoodRepository {
     String query, {
     int limit = 20,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final items = await searchFoods(query);
     return items
-        .take(limit)
+        .take(safeLimit)
         .map(
           (item) => FoodSummary(
             id: item.id,
@@ -109,7 +116,10 @@ class MemoryFoodRepository implements FoodRepository {
     FoodSearchQuery query, {
     int limit = 100,
   }) async {
-    final items = await searchFoodsAdvanced(query, limit: limit);
+    final items = await searchFoodsAdvanced(
+      query,
+      limit: normalizeRepositoryReadLimit(limit),
+    );
     return items.map(_qualityService.summaryFromItem).toList(growable: false);
   }
 
@@ -118,6 +128,7 @@ class MemoryFoodRepository implements FoodRepository {
     String country, {
     int limit = 1000,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final normalized = country.trim().toLowerCase();
     return _detailsByCanonicalId.values
         .where((details) {
@@ -128,7 +139,7 @@ class MemoryFoodRepository implements FoodRepository {
             (source) => source.country.toLowerCase() == normalized,
           );
         })
-        .take(limit)
+        .take(safeLimit)
         .map(
           (details) => FoodSummary(
             id: details.id,
@@ -155,12 +166,24 @@ class MemoryFoodRepository implements FoodRepository {
 
   @override
   Future<List<MergeReviewIssue>> getMergeReviewIssues({int limit = 100}) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    if (safeLimit == 0) {
+      return const [];
+    }
+    return (await queryMergeReviewIssues(
+      MergeReviewIssueQuery(limit: safeLimit),
+    )).items;
+  }
+
+  @override
+  Future<MergeReviewIssuePage> queryMergeReviewIssues(
+    MergeReviewIssueQuery query,
+  ) async {
     final issues = <MergeReviewIssue>[];
     for (final details in _detailsByCanonicalId.values) {
       issues.addAll(_qualityService.reviewIssuesForDetails(details));
     }
-    issues.sort((left, right) => right.createdAt.compareTo(left.createdAt));
-    return issues.take(limit).toList(growable: false);
+    return MergeReviewIssuePage.fromIssues(issues: issues, query: query);
   }
 
   @override
@@ -307,7 +330,8 @@ class MemoryFoodRepository implements FoodRepository {
   Future<List<ManualGovernanceLogEntry>> getManualGovernanceLogs({
     int limit = 50,
   }) async {
-    return _manualGovernanceLogs.take(limit).toList(growable: false);
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    return _manualGovernanceLogs.take(safeLimit).toList(growable: false);
   }
 
   @override
@@ -640,7 +664,8 @@ class MemoryFoodRepository implements FoodRepository {
 
   @override
   Future<List<ImportLogEntry>> getImportLogs({int limit = 20}) async {
-    return _importLogs.take(limit).toList(growable: false);
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    return _importLogs.take(safeLimit).toList(growable: false);
   }
 
   @override
@@ -661,6 +686,7 @@ class MemoryFoodRepository implements FoodRepository {
     String? status,
     int limit = 20,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final filtered =
         _fetchJobs
             .where((entry) {
@@ -676,7 +702,7 @@ class MemoryFoodRepository implements FoodRepository {
             })
             .toList(growable: false)
           ..sort((left, right) => right.startedAt.compareTo(left.startedAt));
-    return filtered.take(limit).toList(growable: false);
+    return filtered.take(safeLimit).toList(growable: false);
   }
 
   @override
@@ -703,7 +729,8 @@ class MemoryFoodRepository implements FoodRepository {
   Future<List<AiSuggestionLogEntry>> getAiSuggestionLogs({
     int limit = 20,
   }) async {
-    return _aiSuggestionLogs.take(limit).toList(growable: false);
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    return _aiSuggestionLogs.take(safeLimit).toList(growable: false);
   }
 
   @override
@@ -730,9 +757,10 @@ class MemoryFoodRepository implements FoodRepository {
   Future<List<DatasetArtifactEntry>> getDatasetArtifacts({
     int limit = 50,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final sorted = List<DatasetArtifactEntry>.from(_datasetArtifacts)
       ..sort((left, right) => right.fetchedAt.compareTo(left.fetchedAt));
-    return sorted.take(limit).toList(growable: false);
+    return sorted.take(safeLimit).toList(growable: false);
   }
 
   @override
@@ -782,7 +810,8 @@ class MemoryFoodRepository implements FoodRepository {
 
   @override
   Future<List<ExportHistoryEntry>> getExportHistory({int limit = 20}) async {
-    return _exportHistory.take(limit).toList(growable: false);
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    return _exportHistory.take(safeLimit).toList(growable: false);
   }
 }
 

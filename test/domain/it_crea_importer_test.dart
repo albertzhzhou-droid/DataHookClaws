@@ -4,6 +4,8 @@ import 'package:data_hook_claws/src/data/memory_food_repository.dart';
 import 'package:data_hook_claws/src/domain/normalization/food_record_normalizer.dart';
 import 'package:data_hook_claws/src/domain/sync_food_catalog_use_case.dart';
 import 'package:data_hook_claws/src/importers/it_crea_importer.dart';
+import 'package:data_hook_claws/src/models/dataset_artifact_entry.dart';
+import 'package:data_hook_claws/src/models/import_log_entry.dart';
 import 'package:data_hook_claws/src/models/import_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -52,7 +54,101 @@ void main() {
       expect(summary.importedCount, 1);
       expect(results.single.country, 'Italy');
     });
+
+    test('returns imported foods when success log persistence fails', () async {
+      final repository = _FailingImportLogRepository();
+      final useCase = SyncFoodCatalogUseCase(
+        repository: repository,
+        importers: [ItCreaImporter(client: _fakeClient())],
+        normalizer: const FoodRecordNormalizer(),
+      );
+
+      final summary = await useCase.syncSource(
+        importerId: 'it-crea',
+        request: const ImportRequest(query: 'pane', limit: 5),
+      );
+
+      expect(summary.importedCount, 1);
+      expect(await repository.searchFoods('pane'), hasLength(1));
+      expect(repository.logWriteAttempts, 1);
+    });
+
+    test('returns imported foods when artifact persistence fails', () async {
+      final repository = _FailingDatasetArtifactRepository();
+      final useCase = SyncFoodCatalogUseCase(
+        repository: repository,
+        importers: [ItCreaImporter(client: _fakeClient())],
+        normalizer: const FoodRecordNormalizer(),
+      );
+
+      final summary = await useCase.syncSource(
+        importerId: 'it-crea',
+        request: const ImportRequest(
+          query: 'pane',
+          limit: 5,
+          datasetPath: '/manual/it-crea-export.html',
+        ),
+      );
+
+      expect(summary.importedCount, 1);
+      expect(await repository.searchFoods('pane'), hasLength(1));
+      expect(repository.artifactWriteAttempts, 1);
+      expect((await repository.getImportLogs()).single.status, 'success');
+    });
+
+    test(
+      'preserves the original import failure when failure log persistence fails',
+      () async {
+        final repository = _FailingImportLogRepository();
+        final useCase = SyncFoodCatalogUseCase(
+          repository: repository,
+          importers: [
+            ItCreaImporter(
+              client: MockClient(
+                (_) async => http.Response('upstream unavailable', 503),
+              ),
+            ),
+          ],
+          normalizer: const FoodRecordNormalizer(),
+        );
+
+        await expectLater(
+          useCase.syncSource(
+            importerId: 'it-crea',
+            request: const ImportRequest(query: 'pane', limit: 5),
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              contains('status 503'),
+            ),
+          ),
+        );
+        expect(repository.logWriteAttempts, 1);
+      },
+    );
   });
+}
+
+class _FailingImportLogRepository extends MemoryFoodRepository {
+  int logWriteAttempts = 0;
+
+  @override
+  Future<void> addImportLog(ImportLogEntry entry) async {
+    logWriteAttempts += 1;
+    throw StateError('import log unavailable');
+  }
+}
+
+class _FailingDatasetArtifactRepository extends MemoryFoodRepository {
+  int artifactWriteAttempts = 0;
+
+  @override
+  Future<void> upsertDatasetArtifact(DatasetArtifactEntry entry) async {
+    artifactWriteAttempts += 1;
+    throw StateError('dataset artifact unavailable');
+  }
 }
 
 http.Client _fakeClient() {

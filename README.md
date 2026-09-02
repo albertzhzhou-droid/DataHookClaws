@@ -89,11 +89,195 @@ flutter run
 Run validation:
 
 ```bash
-flutter analyze
-flutter test
-flutter test test/domain/source_importers_test.dart test/domain/it_crea_importer_test.dart
-flutter build web
+./tool/ci_checks.sh
 ```
+
+By default in local/non-CI mode, the Flutter and compare regression checks
+are soft-skipped when the environment cannot run them (for example, without
+network for hooks or when Flutter SDK cache updates are unavailable).
+To force strict behavior locally, run:
+
+```bash
+DHC_DART_BIN="/path/to/your/flutter/bin/cache/dart-sdk/bin/dart" \
+DHC_FLUTTER_BIN="/path/to/your/flutter/bin/flutter" \
+DHC_FORCE_DART_CHECKS=true ./tool/ci_checks.sh
+```
+
+This variable pair enforces strictness only for the Dart-based checks
+(`check_compare_replay_draft_cleanup.dart`, `check_compare_unit_normalization.dart`,
+`check_compare_accessibility.dart`, parser/trend/funnel scripts). Flutter stages
+(`flutter analyze`, `flutter test`, and build) are still soft-skipped locally
+unless `DHC_FORCE_FLUTTER_CHECKS=true` (or CI mode).
+
+For `check_compare_unit_normalization.dart`, you can also pass a custom fixture path:
+
+```bash
+DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE="tool/fixtures/compare_unit_normalization_cases.json" \
+DHC_FORCE_DART_CHECKS=true ./tool/ci_checks.sh
+```
+
+If unset, the script defaults to `tool/fixtures/compare_unit_normalization_cases.json`
+both locally and in CI. A missing, unreadable, malformed, or zero-case fixture
+emits a diagnostic on stderr and falls back to the built-in regression cases;
+non-object array entries are treated as malformed rather than silently ignored.
+GitHub Actions can override the path through the repository variable
+`DHC_COMPARE_UNIT_NORMALIZATION_FIXTURE`; the workflow explicitly maps that
+variable into the job environment before applying the same default.
+
+If you also want Flutter-only command strictness locally (instead of soft-skip),
+set:
+
+```bash
+DHC_DART_BIN="/path/to/your/flutter/bin/cache/dart-sdk/bin/dart" \
+DHC_FLUTTER_BIN="/path/to/your/flutter/bin/flutter" \
+DHC_FORCE_FLUTTER_CHECKS=true ./tool/ci_checks.sh
+```
+
+CI runs are strict by default.
+
+Compare accessibility regression checks additionally consume a snapshot specification at
+`docs/compare_replay_accessibility_snapshot_template.json` to validate no-draft/
+manual-rebuild compare replay paths and urgent warning phrasing.
+
+### Compare accessibility CI contract
+
+The field-level contract for this CI path is documented in
+[docs/compare_replay_accessibility_ci_contract.md](docs/compare_replay_accessibility_ci_contract.md),
+including report block markers, JSON schema, parser outputs, and failure budgets.
+
+### Compare accessibility CI report parsing
+
+The compare accessibility gate now emits machine-readable summary lines:
+
+- `COMPARE_REPLAY_A11Y_TEMPLATE_SUMMARY_JSON=...`
+- `COMPARE_REPLAY_A11Y_TEMPLATE_REPORT_START/END`
+
+CI parses this output with `tool/parse_compare_accessibility_report.dart` and prints:
+
+- `COMPARE_REPLAY_A11Y_CI_METRICS ...`
+- `COMPARE_REPLAY_A11Y_PARSED_JSON=...`
+
+You can also run the parser locally for manual smoke checks:
+
+```bash
+# Use an inner SDK dart binary in write-restricted CI/offline environments (recommended):
+export DART_BIN="/path/to/your/flutter/bin/cache/dart-sdk/bin/dart"
+HOME=/tmp/dhc_dart_checks_home DART_SUPPRESS_ANALYTICS=true "$DART_BIN" tool/check_compare_accessibility.dart | tee /tmp/compare_replay_accessibility_check.log
+HOME=/tmp/dhc_dart_checks_home DART_SUPPRESS_ANALYTICS=true "$DART_BIN" tool/parse_compare_accessibility_report.dart /tmp/compare_replay_accessibility_check.log
+```
+
+For CI governance trending, keep parsed JSON outputs and run:
+
+```bash
+"$DART_BIN" tool/analyze_compare_accessibility_trends.dart /tmp/compare_replay_accessibility_log1.log /tmp/compare_replay_accessibility_log2.log --window-runs 7
+"$DART_BIN" tool/analyze_compare_accessibility_trends.dart /tmp/compare_replay_accessibility_log1.log /tmp/compare_replay_accessibility_log2.log --window-days 7
+```
+
+Optional trend alerting (supports both `alerts` and `rateTrend`):
+
+```bash
+export DHC_A11Y_TREND_MAX_SCHEMA_MISMATCH=0
+export DHC_A11Y_TREND_MAX_UNKNOWN_SEVERITY=0
+export DHC_A11Y_TREND_MIN_PASS_RATE=0.98
+export DHC_A11Y_TREND_MIN_PHRASE_SUCCESS_RATE=0.98
+export DHC_A11Y_TREND_MIN_SEMANTICS_RATE=0.98
+export DHC_A11Y_TREND_MIN_LIVEREGION_RATE=0.98
+export DHC_A11Y_TREND_MAX_PASS_RATE_DROP=0.02
+export DHC_A11Y_TREND_MAX_PHRASE_SUCCESS_RATE_DROP=0.02
+export DHC_A11Y_TREND_MAX_SEMANTICS_RATE_DROP=0.02
+export DHC_A11Y_TREND_MAX_LIVEREGION_RATE_DROP=0.02
+export DHC_A11Y_TREND_MAX_CONSECUTIVE_DROPS=3
+export DHC_A11Y_TREND_RECURRENCE_WINDOW=2
+export DHC_A11Y_TREND_MAX_RECURRENCE_COUNT=0
+export DHC_A11Y_TREND_MAX_ABSENCE_RUNS=999
+export DHC_A11Y_TREND_FAIL_ON_ALERTS=true
+```
+
+Optional trend history + denoise:
+
+```bash
+export DHC_A11Y_TREND_HISTORY_FILE=/tmp/compare_replay_accessibility_trend_history.jsonl
+export DHC_A11Y_TREND_HISTORY_MAX_ENTRIES=50
+export DHC_A11Y_TREND_TREND_NOISE_WINDOW=2
+export DHC_A11Y_TREND_RECURRENCE_WINDOW=2
+export DHC_A11Y_TREND_MAX_RECURRENCE_COUNT=0
+export DHC_A11Y_TREND_MAX_ABSENCE_RUNS=999
+```
+
+Run with history persistence:
+
+```bash
+"$DART_BIN" run tool/analyze_compare_accessibility_trends.dart \
+  /tmp/compare_replay_accessibility_check.log \
+  --window-runs 7 \
+  --history-file /tmp/compare_replay_accessibility_trend_history.jsonl \
+  --history-max-entries 50 \
+  --trend-noise-window 2 \
+  --output-json
+```
+
+Generate trend dashboard artifacts (daily/weekly digest and stable alert candidates):
+
+```bash
+"$DART_BIN" run tool/build_compare_accessibility_trend_digest.dart \
+  /tmp/compare_replay_accessibility_trend_history.jsonl \
+  --scope compare_replay_accessibility \
+  --daily-limit 14 \
+  --weekly-limit 8 \
+  --regression-window 2 \
+  --output-json
+```
+
+Optional dashboard env overrides:
+
+```bash
+export DHC_A11Y_TREND_DASHBOARD_DAILY_LIMIT=14
+export DHC_A11Y_TREND_DASHBOARD_WEEKLY_LIMIT=8
+export DHC_A11Y_TREND_DASHBOARD_REGRESSION_WINDOW=2
+```
+
+Optional strict thresholds (for CI-like behavior):
+
+```bash
+export DHC_A11Y_REPORT_STRICT=true
+export DHC_A11Y_MAX_CASES_FAILED=0
+export DHC_A11Y_MAX_PHRASE_MISSING=0
+export DHC_A11Y_MAX_SEMANTIC_FAIL=0
+export DHC_A11Y_MAX_LIVEREGION_FAIL=0
+export DHC_A11Y_MAX_UNKNOWN_SEVERITY_BUCKET=0
+```
+
+When `DHC_A11Y_REPORT_STRICT` is true, any threshold violation exits non-zero and fails the step.
+
+Trend-check can run from the same local parse log after parser output:
+
+```bash
+"$DART_BIN" run tool/analyze_compare_accessibility_trends.dart \
+  /tmp/compare_replay_accessibility_check.log \
+  --window-runs 7 \
+  --output-json
+```
+
+For offline or hook-constrained environments, you can validate the full chain via AOT using your local Flutter SDK dart binary:
+
+```bash
+export FLUTTER_DART_BIN="/path/to/flutter/bin/cache/dart-sdk/bin/dart"
+HOME=/private/tmp/dhc_dart_home_test DART_SUPPRESS_ANALYTICS=true \
+  "$FLUTTER_DART_BIN" compile exe tool/check_compare_accessibility.dart -o /tmp/check_compare_accessibility
+HOME=/private/tmp/dhc_dart_home_test DART_SUPPRESS_ANALYTICS=true \
+  "$FLUTTER_DART_BIN" compile exe tool/parse_compare_accessibility_report.dart -o /tmp/parse_report
+HOME=/private/tmp/dhc_dart_home_test DART_SUPPRESS_ANALYTICS=true \
+  "$FLUTTER_DART_BIN" compile exe tool/analyze_compare_accessibility_trends.dart -o /tmp/analyze_trend
+HOME=/private/tmp/dhc_dart_home_test DART_SUPPRESS_ANALYTICS=true \
+  "$FLUTTER_DART_BIN" compile exe tool/build_compare_accessibility_trend_digest.dart -o /tmp/build_digest
+/tmp/check_compare_accessibility | tee /tmp/compare_replay_accessibility_check.log
+/tmp/parse_report /tmp/compare_replay_accessibility_check.log | tee /tmp/compare_replay_accessibility_parsed.log
+/tmp/analyze_trend /tmp/compare_replay_accessibility_parsed.log --window-runs 7 --output-json
+/tmp/build_digest /tmp/compare_replay_accessibility_trend_history.jsonl --scope compare_replay_accessibility --output-json
+```
+
+In CI, trend alerts are treated as failing when `CI=true`; for non-CI runs, add
+`DHC_A11Y_TREND_FAIL_ON_ALERTS=true` to enforce local strictness.
 
 ## Ollama Configuration
 
@@ -122,5 +306,7 @@ This project is not medical advice, nutrition advice, or an official government 
 ## Development Documentation
 
 - [Project plan](docs/PROJECT_PLAN.md)
+- [Compare replay accessibility trend dashboard script](tool/build_compare_accessibility_trend_digest.dart)
 - [Release packaging notes](docs/release_packaging.md)
 - [Agent operating context](AGENT.md)
+- [Compare replay accessibility CI contract](docs/compare_replay_accessibility_ci_contract.md)

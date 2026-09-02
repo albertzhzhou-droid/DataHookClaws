@@ -5,6 +5,8 @@ import 'package:data_hook_claws/src/api/export_models.dart';
 import 'package:data_hook_claws/src/api/food_catalog_export_service.dart';
 import 'package:data_hook_claws/src/data/memory_food_repository.dart';
 import 'package:data_hook_claws/src/data/sqlite_food_repository.dart';
+import 'package:data_hook_claws/src/domain/ai_assist_services.dart';
+import 'package:data_hook_claws/src/models/export_history_entry.dart';
 import 'package:data_hook_claws/src/models/food_item.dart';
 import 'package:data_hook_claws/src/models/nutrient.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -72,6 +74,71 @@ void main() {
 
     expect(artifact.path, startsWith(customRoot.path));
   });
+
+  test('negative food-id export limits produce an empty artifact', () async {
+    final exportRoot = await Directory.systemTemp.createTemp(
+      'export-negative-limit',
+    );
+    addTearDown(() async {
+      if (exportRoot.existsSync()) {
+        await exportRoot.delete(recursive: true);
+      }
+    });
+
+    final food = _salmon();
+    final repository = MemoryFoodRepository(seedItems: [food]);
+    final service = FoodCatalogExportService(
+      repository: repository,
+      documentsDirectoryResolver: () async => exportRoot,
+    );
+
+    final artifact = await service.exportFoodIds(
+      foodIds: [food.id],
+      format: ExportFormat.json,
+      detailLevel: ExportDetailLevel.summary,
+      limit: -1,
+    );
+
+    final json =
+        jsonDecode(await File(artifact.path).readAsString())
+            as Map<String, Object?>;
+    expect(artifact.recordCount, 0);
+    expect(json['foods'], isEmpty);
+    expect(await repository.getExportHistory(), hasLength(1));
+  });
+
+  test(
+    'export scope type cannot escape the configured export directory',
+    () async {
+      final exportRoot = await Directory.systemTemp.createTemp(
+        'export-scope-path-safety',
+      );
+      addTearDown(() async {
+        if (exportRoot.existsSync()) {
+          await exportRoot.delete(recursive: true);
+        }
+      });
+
+      final food = _salmon();
+    final service = FoodCatalogExportService(
+      repository: MemoryFoodRepository(seedItems: [food]),
+      documentsDirectoryResolver: () async => exportRoot,
+      exportDirectoryPathResolver: () async => exportRoot.path,
+      clock: () => DateTime(2026, 5, 24, 14, 20),
+    );
+
+      final artifact = await service.exportFoodIds(
+        foodIds: [food.id],
+        format: ExportFormat.json,
+        detailLevel: ExportDetailLevel.summary,
+        scopeType: '../outside/../../escape',
+        scopeValue: 'safe-scope',
+      );
+
+      expect(p.dirname(artifact.path), exportRoot.path);
+      expect(File(artifact.path).existsSync(), isTrue);
+    },
+  );
 
   test(
     'exports search detailed json with provenance and merge audit',
@@ -262,6 +329,89 @@ void main() {
       );
     },
   );
+
+  test('returns the export artifact when history persistence fails', () async {
+    final exportRoot = await Directory.systemTemp.createTemp(
+      'export-history-failure',
+    );
+    addTearDown(() async {
+      if (exportRoot.existsSync()) {
+        await exportRoot.delete(recursive: true);
+      }
+    });
+
+    final repository = _FailingExportHistoryRepository(seedItems: [_salmon()]);
+    final service = FoodCatalogExportService(
+      repository: repository,
+      documentsDirectoryResolver: () async => exportRoot,
+      clock: () => DateTime(2026, 5, 24, 14, 20),
+    );
+
+    final artifact = await service.exportSearchResults(
+      query: 'salmon',
+      format: ExportFormat.json,
+      detailLevel: ExportDetailLevel.summary,
+    );
+
+    expect(File(artifact.path).existsSync(), isTrue);
+    expect(repository.historyWriteAttempts, 1);
+    expect(await repository.getExportHistory(), isEmpty);
+  });
+
+  test('keeps export history when AI summary generation fails', () async {
+    final exportRoot = await Directory.systemTemp.createTemp(
+      'export-summary-failure',
+    );
+    addTearDown(() async {
+      if (exportRoot.existsSync()) {
+        await exportRoot.delete(recursive: true);
+      }
+    });
+
+    final repository = MemoryFoodRepository(seedItems: [_salmon()]);
+    final service = FoodCatalogExportService(
+      repository: repository,
+      documentsDirectoryResolver: () async => exportRoot,
+      exportSummaryService: _ThrowingExportSummaryService(),
+    );
+
+    final artifact = await service.exportSearchResults(
+      query: 'salmon',
+      format: ExportFormat.json,
+      detailLevel: ExportDetailLevel.summary,
+    );
+
+    expect(File(artifact.path).existsSync(), isTrue);
+    final history = await repository.getExportHistory();
+    expect(history, hasLength(1));
+    expect(history.single.summary, 'Exported 1 records for search:salmon.');
+  });
+}
+
+class _ThrowingExportSummaryService extends ExportSummaryService {
+  _ThrowingExportSummaryService() : super(persistSuggestion: (_) async {});
+
+  @override
+  Future<String> summarize({
+    required String scopeLabel,
+    required String format,
+    required String detailLevel,
+    required int recordCount,
+  }) async {
+    throw StateError('summary provider unavailable');
+  }
+}
+
+class _FailingExportHistoryRepository extends MemoryFoodRepository {
+  _FailingExportHistoryRepository({super.seedItems});
+
+  int historyWriteAttempts = 0;
+
+  @override
+  Future<void> addExportHistory(ExportHistoryEntry entry) async {
+    historyWriteAttempts += 1;
+    throw StateError('export history unavailable');
+  }
 }
 
 FoodItem _salmon({String country = 'Canada'}) {

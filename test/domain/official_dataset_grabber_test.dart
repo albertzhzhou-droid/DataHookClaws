@@ -5,10 +5,19 @@ import 'package:data_hook_claws/src/data/official_dataset_grabber.dart';
 import 'package:data_hook_claws/src/data/official_dataset_manifest.dart';
 import 'package:data_hook_claws/src/models/import_models.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
   group('official dataset grabber', () {
+    test('clamps negative import limits to an empty request', () {
+      const request = ImportRequest(query: 'salmon', limit: -1);
+
+      expect(request.limit, 0);
+      expect(request.copyWith(limit: -5).limit, 0);
+    });
+
     test('keeps explicit local dataset path unchanged', () async {
       final grabber = OfficialDatasetGrabber(
         transport: _FakeDatasetTransport(),
@@ -110,6 +119,139 @@ void main() {
       );
     });
 
+    test(
+      'preparer rejects zip entries outside the extraction directory',
+      () async {
+        final tempDirectory = await Directory.systemTemp.createTemp(
+          'dataset-preparer-path-safety-test',
+        );
+        addTearDown(() async {
+          if (tempDirectory.existsSync()) {
+            await tempDirectory.delete(recursive: true);
+          }
+        });
+
+        final zipFile = File(p.join(tempDirectory.path, 'malicious.zip'));
+        await zipFile.writeAsBytes(_zipBytesWithTraversalEntry(), flush: true);
+
+        final preparer = DatasetPackagePreparer(
+          rootResolver: () async => tempDirectory,
+        );
+        final datasetPath = await preparer.prepare(
+          importerId: 'canada-cnf',
+          packaging: OfficialDatasetPackaging.zipDirectory,
+          downloadedFiles: [zipFile.path],
+        );
+
+        expect(
+          File(
+            p.join(
+              tempDirectory.path,
+              'official_datasets',
+              'canada-cnf',
+              'extracted-evil',
+              'escape.txt',
+            ),
+          ).existsSync(),
+          isFalse,
+        );
+        expect(
+          File(p.join(datasetPath, 'safe', 'Food name.csv')).existsSync(),
+          isTrue,
+        );
+      },
+    );
+
+    test(
+      'transport rejects download filenames outside the download directory',
+      () async {
+        final tempDirectory = await Directory.systemTemp.createTemp(
+          'dataset-download-path-safety-test',
+        );
+        addTearDown(() async {
+          if (tempDirectory.existsSync()) {
+            await tempDirectory.delete(recursive: true);
+          }
+        });
+
+        var requested = false;
+        final transport = HttpDatasetTransport(
+          client: MockClient((_) async {
+            requested = true;
+            return http.Response.bytes([1, 2, 3], 200);
+          }),
+          rootResolver: () async => tempDirectory,
+        );
+
+        await expectLater(
+          transport.download(
+            url: Uri.parse('https://example.com/dataset.zip'),
+            suggestedFileName: '../outside.zip',
+            importerId: 'canada-cnf',
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        expect(requested, isFalse);
+        expect(
+          File(
+            p.join(
+              tempDirectory.path,
+              'official_datasets',
+              'canada-cnf',
+              'outside.zip',
+            ),
+          ).existsSync(),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'transport rejects unsafe importer ids before resolving the root',
+      () async {
+        var rootResolved = false;
+        final transport = HttpDatasetTransport(
+          client: MockClient((_) async => http.Response.bytes([1], 200)),
+          rootResolver: () async {
+            rootResolved = true;
+            return Directory.systemTemp;
+          },
+        );
+
+        await expectLater(
+          transport.datasetRoot('../escape'),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        expect(rootResolved, isFalse);
+      },
+    );
+
+    test(
+      'preparer rejects unsafe importer ids before resolving the root',
+      () async {
+        var rootResolved = false;
+        final preparer = DatasetPackagePreparer(
+          rootResolver: () async {
+            rootResolved = true;
+            return Directory.systemTemp;
+          },
+        );
+
+        await expectLater(
+          preparer.prepare(
+            importerId: r'..\escape',
+            packaging: OfficialDatasetPackaging.zipDirectory,
+            downloadedFiles: ['/tmp/not-read.zip'],
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        expect(rootResolved, isFalse);
+      },
+    );
+
     test('ships a direct single-file manifest for France CIQUAL', () {
       final entry = officialDatasetManifest['fr-ciqual'];
 
@@ -176,6 +318,21 @@ List<int> _tinyZipBytes() {
         'Nutrient amount.csv',
         21,
         'FoodID,NutrientValue\n'.codeUnits,
+      ),
+    );
+  return ZipEncoder().encode(archive)!;
+}
+
+List<int> _zipBytesWithTraversalEntry() {
+  final archive = Archive()
+    ..addFile(
+      ArchiveFile('../extracted-evil/escape.txt', 6, 'escape'.codeUnits),
+    )
+    ..addFile(
+      ArchiveFile(
+        'safe/Food name.csv',
+        23,
+        'FoodID,FoodDescription\n'.codeUnits,
       ),
     );
   return ZipEncoder().encode(archive)!;

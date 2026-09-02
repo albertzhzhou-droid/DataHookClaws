@@ -1,0 +1,126 @@
+{
+  "schemaVersion": "1.0.1",
+  "snapshotScope": "compare_replay_no_draft_manual_rebuild",
+  "compareReplayNoDraftAccessibilitySnapshots": [
+    {
+      "name": "unavailable_with_missing_items",
+      "trigger": "replay compare export where all IDs are missing",
+      "sourcePhrases": [
+        {
+          "text": "Compare replay unavailable",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "Export status should be in a live-region semantics container"
+        },
+        {
+          "text": "Rebuild compare manually.",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Manual rebuild action should be discoverable by screen readers"
+        },
+        {
+          "text": "Rebuild compare manually",
+          "severity": "medium",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Manual rebuild action should be discoverable by screen readers"
+        }
+      ]
+    },
+    {
+      "name": "retry_limit_reached",
+      "trigger": "retrying missing IDs exceeds limit",
+      "sourcePhrases": [
+        {
+          "text": "Compare replay still missing after",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "Retry-limit status should be in live region"
+        },
+        {
+          "text": "Please rebuild compare manually.",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Manual rebuild guidance should be announced"
+        },
+        {
+          "text": "Rebuild compare manually",
+          "severity": "medium",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Manual rebuild action should be discoverable by screen readers"
+        }
+      ]
+    },
+    {
+      "name": "manual_rebuild_draft_active",
+      "trigger": "user enters manual rebuild path",
+      "sourcePhrases": [
+        {
+          "text": "Draft mode active",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Draft status should have semantics wrapper"
+        },
+        {
+          "text": "Resume draft",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Draft control should have explicit semantics label"
+        },
+        {
+          "text": "Rebuild compare manually",
+          "severity": "medium",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Manual rebuild action should remain semantically visible"
+        }
+      ]
+    },
+    {
+      "name": "clear_unavailable_after_manual_clear",
+      "trigger": "user clears unavailable recall entries",
+      "sourcePhrases": [
+        {
+          "text": "Clear unavailable compare recalls",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Clear action should keep explicit semantics label"
+        },
+        {
+          "text": "Unavailable (manual rebuild required)",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "Manual-rebuild status should be surfaced in live region"
+        },
+        {
+          "text": "Export status message",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "Export status message should remain in Semantics container"
+        }
+      ]
+    },
+    {
+      "name": "urgent_draft_warning",
+      "trigger": "draft enters urgent window",
+      "sourcePhrases": [
+        {
+          "text": "Compare replay draft urgent warning",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "warning text must be wrapped as live-region semantics"
+        },
+        {
+          "text": "Clear draft now",
+          "severity": "high",
+          "requiresLiveRegion": false,
+          "semanticRequirement": "Urgent clear action should be explicitly labeled"
+        },
+        {
+          "text": "Draft remaining",
+          "severity": "high",
+          "requiresLiveRegion": true,
+          "semanticRequirement": "Draft remaining time should be announced live"
+        }
+      ]
+    }
+  ]
+}

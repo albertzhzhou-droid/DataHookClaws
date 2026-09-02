@@ -115,6 +115,60 @@ class FoodCatalogExportService {
     );
   }
 
+  Future<ExportArtifact> exportFoodIds({
+    required List<String> foodIds,
+    required ExportFormat format,
+    required ExportDetailLevel detailLevel,
+    int limit = 1000,
+    String scopeType = 'favorites',
+    String? scopeValue,
+  }) async {
+    final uniqueIds = foodIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    final safeLimit = limit < 0 ? 0 : limit;
+    final selectedIds = uniqueIds.take(safeLimit).toList(growable: false);
+    if (selectedIds.isEmpty) {
+      return _writeExport(
+        format: format,
+        detailLevel: detailLevel,
+        scopeType: scopeType,
+        scopeValue: scopeValue ?? 'empty',
+        summaries: const <FoodSummaryDto>[],
+        details: const <FoodDetails>[],
+      );
+    }
+
+    final summaries = <FoodSummaryDto>[];
+    final details = <FoodDetails>[];
+    for (final foodId in selectedIds) {
+      final detail = await _repository.getFoodDetails(foodId);
+      if (detail == null) {
+        continue;
+      }
+      summaries.add(_summaryFromDetails(detail));
+      if (detailLevel == ExportDetailLevel.detailed) {
+        details.add(detail);
+      }
+    }
+
+    return _writeExport(
+      format: format,
+      detailLevel: detailLevel,
+      scopeType: scopeType,
+      scopeValue:
+          scopeValue ??
+          _exportScopeValueForIds(
+            selectedIds,
+            compact: scopeType == 'favorites',
+          ),
+      summaries: summaries,
+      details: details,
+    );
+  }
+
   Future<ExportArtifact> exportDatabaseSnapshot() async {
     final now = _clock();
     final exportDir = await _ensureExportDirectory();
@@ -134,6 +188,25 @@ class FoodCatalogExportService {
     );
     await _recordExportHistory(artifact);
     return artifact;
+  }
+
+  FoodSummaryDto _summaryFromDetails(FoodDetails detail) {
+    final sourceNames = detail.sourceRecords
+        .map((source) => source.sourceName.trim())
+        .where((name) => name.isNotEmpty)
+        .toList(growable: false);
+    return FoodSummaryDto(
+      id: detail.id,
+      name: detail.displayName,
+      category: detail.category,
+      country: detail.countryHint,
+      sourceSummary: sourceNames.isEmpty
+          ? 'Merged official sources'
+          : sourceNames.join('; '),
+      description: detail.description,
+      servingBasis: detail.servingBasis,
+      lastUpdatedIso: detail.lastAggregatedAt.toIso8601String(),
+    );
   }
 
   Future<List<FoodDetails>> _loadDetails(List<FoodSummaryDto> summaries) async {
@@ -157,12 +230,14 @@ class FoodCatalogExportService {
   }) async {
     final now = _clock();
     final exportDir = await _ensureExportDirectory();
+    final scopeTypeSlug = _slug(scopeType);
     final scopeSlug = _slug(scopeValue);
     final detailSlug = detailLevel.name;
     final extension = format == ExportFormat.json ? 'json' : 'csv';
     final filePath = p.join(
       exportDir.path,
-      '$scopeType-$scopeSlug-$detailSlug-${_fileTimestamp(now)}.$extension',
+      '${scopeTypeSlug.isEmpty ? 'export' : scopeTypeSlug}-$scopeSlug-'
+      '$detailSlug-${_fileTimestamp(now)}.$extension',
     );
 
     final file = File(filePath);
@@ -344,27 +419,40 @@ class FoodCatalogExportService {
 
   Future<void> _recordExportHistory(ExportArtifact artifact) async {
     final summaryService = _exportSummaryService;
-    final summary = summaryService == null
-        ? 'Exported ${artifact.recordCount} records for ${artifact.scopeLabel}.'
-        : await summaryService.summarize(
-            scopeLabel: artifact.scopeLabel,
-            format: artifact.format.name,
-            detailLevel: artifact.detailLevel.name,
-            recordCount: artifact.recordCount,
-          );
-    await _repository.addExportHistory(
-      ExportHistoryEntry(
-        id: 'export-${artifact.createdAt.microsecondsSinceEpoch}',
-        path: artifact.path,
-        format: artifact.format,
-        detailLevel: artifact.detailLevel,
-        recordCount: artifact.recordCount,
-        scopeLabel: artifact.scopeLabel,
-        createdAt: artifact.createdAt,
-        status: 'success',
-        summary: summary,
-      ),
-    );
+    late final String summary;
+    try {
+      summary = summaryService == null
+          ? 'Exported ${artifact.recordCount} records for ${artifact.scopeLabel}.'
+          : await summaryService.summarize(
+              scopeLabel: artifact.scopeLabel,
+              format: artifact.format.name,
+              detailLevel: artifact.detailLevel.name,
+              recordCount: artifact.recordCount,
+            );
+    } catch (_) {
+      // AI summary generation is supplemental; retain a deterministic history
+      // entry when an injected or future summary provider fails unexpectedly.
+      summary =
+          'Exported ${artifact.recordCount} records for ${artifact.scopeLabel}.';
+    }
+    try {
+      await _repository.addExportHistory(
+        ExportHistoryEntry(
+          id: 'export-${artifact.createdAt.microsecondsSinceEpoch}',
+          path: artifact.path,
+          format: artifact.format,
+          detailLevel: artifact.detailLevel,
+          recordCount: artifact.recordCount,
+          scopeLabel: artifact.scopeLabel,
+          createdAt: artifact.createdAt,
+          status: 'success',
+          summary: summary,
+        ),
+      );
+    } catch (_) {
+      // The export file is the primary artifact; history persistence is
+      // supplemental and must not invalidate a successful file write.
+    }
   }
 
   String _fileTimestamp(DateTime value) {
@@ -379,5 +467,22 @@ class FoodCatalogExportService {
     }
     final normalized = cleaned.replaceAll(RegExp(r'[^a-z0-9]+'), '-');
     return normalized.replaceAll(RegExp(r'^-+|-+$'), '');
+  }
+
+  String _exportScopeValueForIds(List<String> ids, {bool compact = true}) {
+    final normalized = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    if (normalized.isEmpty) {
+      return 'empty';
+    }
+    if (!compact) {
+      return normalized.join('|');
+    }
+    if (normalized.length == 1) {
+      return normalized.first;
+    }
+    return '${normalized.first}+${normalized.length - 1}';
   }
 }

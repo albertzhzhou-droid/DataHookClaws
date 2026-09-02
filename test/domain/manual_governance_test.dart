@@ -4,7 +4,9 @@ import 'package:data_hook_claws/src/data/memory_food_repository.dart';
 import 'package:data_hook_claws/src/data/sqlite_food_repository.dart';
 import 'package:data_hook_claws/src/models/food_item.dart';
 import 'package:data_hook_claws/src/models/manual_governance.dart';
+import 'package:data_hook_claws/src/models/merge_review_filter.dart';
 import 'package:data_hook_claws/src/models/merge_review_issue.dart';
+import 'package:data_hook_claws/src/models/merge_review_issue_query.dart';
 import 'package:data_hook_claws/src/models/nutrient.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -110,6 +112,73 @@ void main() {
       'override',
     );
   });
+
+  test(
+    'sqlite review query filters before paging and reports full counts',
+    () async {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'review-query-sqlite',
+      );
+      addTearDown(() async {
+        if (tempDirectory.existsSync()) {
+          await tempDirectory.delete(recursive: true);
+        }
+      });
+      final repository = SqliteFoodRepository(
+        documentsDirectoryResolver: () async => tempDirectory,
+      );
+      await repository.initialize();
+      await repository.upsertFoods([
+        _food(
+          id: 'canada-cnf:salmon',
+          name: 'Atlantic Salmon',
+          category: 'Seafood',
+          country: 'Canada',
+          sourceName: 'CNF',
+        ),
+        _food(
+          id: 'uk-mccance:salmon-spread',
+          name: 'Atlantic Salmon',
+          category: 'Spreads',
+          country: 'United Kingdom',
+          sourceName: 'CoFID',
+        ),
+        _food(
+          id: 'usda:salmon-oil',
+          name: 'Atlantic Salmon',
+          category: 'Oil',
+          country: 'United States',
+          sourceName: 'USDA',
+        ),
+      ]);
+
+      final allIssues = await repository.getMergeReviewIssues();
+      final query = const MergeReviewFilter(
+        severity: MergeReviewSeverity.high,
+        type: MergeReviewIssueType.categoryConflictCandidate,
+      );
+      final firstPage = await repository.queryMergeReviewIssues(
+        MergeReviewIssueQuery(filter: query, limit: 1),
+      );
+      final secondPage = await repository.queryMergeReviewIssues(
+        MergeReviewIssueQuery(filter: query, offset: 1, limit: 1),
+      );
+
+      expect(firstPage.totalCount, allIssues.length);
+      expect(firstPage.matchingCount, greaterThan(1));
+      expect(secondPage.totalCount, firstPage.totalCount);
+      expect(secondPage.matchingCount, firstPage.matchingCount);
+      expect(firstPage.items, hasLength(1));
+      expect(secondPage.items, hasLength(1));
+      expect(secondPage.items.single.id, isNot(firstPage.items.single.id));
+      for (final issue in [...firstPage.items, ...secondPage.items]) {
+        expect(issue.severity, MergeReviewSeverity.high);
+        expect(issue.type, MergeReviewIssueType.categoryConflictCandidate);
+      }
+    },
+  );
 
   test(
     'sqlite manual split persists governance log and refreshes results',
