@@ -1,11 +1,13 @@
 {
     "name": "data_hook_claws",
     "short_name": "data_hook_claws",
+    "id": "/",
+    "scope": "/",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Local-first nutrition database built from official food-composition sources.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

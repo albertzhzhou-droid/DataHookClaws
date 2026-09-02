@@ -11,6 +11,42 @@ import 'package:data_hook_claws/src/models/raw_food_record.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('enrichment continues when fetch-job persistence fails', () async {
+    final repository = MemoryFoodRepository();
+    final queue = BackgroundEnrichmentQueue(
+      syncUseCase: SyncFoodCatalogUseCase(
+        repository: repository,
+        normalizer: const FoodRecordNormalizer(),
+        importers: [
+          _FakeImporter(
+            id: 'usda',
+            displayName: 'USDA',
+            onImport: (request) async => [_record('usda', request.query)],
+          ),
+        ],
+      ),
+    );
+    final states = <EnrichmentQueueState>[];
+    final subscription = queue.states.listen(states.add);
+    addTearDown(subscription.cancel);
+    final statuses = <String>[];
+
+    await queue.schedule(
+      query: 'salmon',
+      normalizedQuery: 'salmon',
+      importerIds: const ['usda'],
+      limitPerImporter: 20,
+      persistJob: (entry) async {
+        statuses.add(entry.status);
+        throw StateError('fetch-job storage unavailable');
+      },
+    );
+
+    expect(statuses, ['queued', 'running', 'success']);
+    expect(queue.currentState.status, EnrichmentStatus.completed);
+    expect(await repository.searchFoods('salmon'), hasLength(1));
+  });
+
   test(
     'failure on one source does not stop later enrichment sources',
     () async {

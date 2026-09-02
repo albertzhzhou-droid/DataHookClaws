@@ -20,9 +20,11 @@ import '../models/food_summary.dart';
 import '../models/import_log_entry.dart';
 import '../models/manual_governance.dart';
 import '../models/merge_review_issue.dart';
+import '../models/merge_review_issue_query.dart';
 import '../models/nutrient.dart';
 import '../models/storage_paths.dart';
 import 'food_repository.dart';
+import 'repository_read_limits.dart';
 
 typedef DocumentsDirectoryResolver = Future<Directory> Function();
 
@@ -30,12 +32,15 @@ class SqliteFoodRepository implements FoodRepository {
   SqliteFoodRepository({
     DocumentsDirectoryResolver? documentsDirectoryResolver,
     String? databaseFileName,
+    DatabaseFactory? databaseFactory,
   }) : _documentsDirectoryResolver =
            documentsDirectoryResolver ?? getApplicationDocumentsDirectory,
-       _databaseFileName = databaseFileName ?? 'data_hook_claws.db';
+       _databaseFileName = databaseFileName ?? 'data_hook_claws.db',
+       _databaseFactoryOverride = databaseFactory;
 
   final DocumentsDirectoryResolver _documentsDirectoryResolver;
   final String _databaseFileName;
+  final DatabaseFactory? _databaseFactoryOverride;
   final TextNormalizer _textNormalizer = const TextNormalizer();
   final CanonicalMergeService _mergeService = const CanonicalMergeService();
   final FoodQualityService _qualityService = FoodQualityService();
@@ -49,55 +54,60 @@ class SqliteFoodRepository implements FoodRepository {
       return;
     }
 
-    if (!Platform.isAndroid && !Platform.isIOS) {
+    final useFfi = !Platform.isAndroid && !Platform.isIOS;
+    if (useFfi) {
       sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
     }
+    final selectedDatabaseFactory =
+        _databaseFactoryOverride ??
+        (useFfi ? databaseFactoryFfi : databaseFactory);
 
     final directory = await _documentsDirectoryResolver();
     final databasePath = p.join(directory.path, _databaseFileName);
     _databasePath = databasePath;
 
-    _database = await openDatabase(
+    _database = await selectedDatabaseFactory.openDatabase(
       databasePath,
-      version: 7,
-      onCreate: (db, version) async {
-        await _createLegacyTables(db);
-        await _createProvenanceTables(db);
-        await _createAppMetaTable(db);
-        await _createExportHistoryTable(db);
-        await _createManualGovernanceTables(db);
-        await _setCanonicalMergeVersion(db, 1);
-        await _setMergeAuditVersion(db, 1);
-      },
-      onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 2) {
-          await _createImportLogsTable(db);
-        }
-        if (oldVersion < 3) {
+      options: OpenDatabaseOptions(
+        version: 7,
+        onCreate: (db, version) async {
+          await _createLegacyTables(db);
           await _createProvenanceTables(db);
-          await _backfillProvenanceTables(db);
-        }
-        if (oldVersion < 4) {
           await _createAppMetaTable(db);
-        }
-        if (oldVersion < 5) {
-          await _createMergeAuditTables(db);
-        }
-        if (oldVersion < 6) {
           await _createExportHistoryTable(db);
-        }
-        if (oldVersion < 7) {
           await _createManualGovernanceTables(db);
-        }
-      },
-      onOpen: (db) async {
-        await _createExportHistoryTable(db);
-        await _createManualGovernanceTables(db);
-        await _backfillProvenanceTables(db);
-        await _ensureCanonicalMergeState(db);
-        await _ensureMergeAuditState(db);
-      },
+          await _setCanonicalMergeVersion(db, 1);
+          await _setMergeAuditVersion(db, 1);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await _createImportLogsTable(db);
+          }
+          if (oldVersion < 3) {
+            await _createProvenanceTables(db);
+            await _backfillProvenanceTables(db);
+          }
+          if (oldVersion < 4) {
+            await _createAppMetaTable(db);
+          }
+          if (oldVersion < 5) {
+            await _createMergeAuditTables(db);
+          }
+          if (oldVersion < 6) {
+            await _createExportHistoryTable(db);
+          }
+          if (oldVersion < 7) {
+            await _createManualGovernanceTables(db);
+          }
+        },
+        onOpen: (db) async {
+          await _createExportHistoryTable(db);
+          await _createManualGovernanceTables(db);
+          await _backfillProvenanceTables(db);
+          await _ensureCanonicalMergeState(db);
+          await _ensureMergeAuditState(db);
+        },
+      ),
     );
   }
 
@@ -148,6 +158,10 @@ class SqliteFoodRepository implements FoodRepository {
     FoodSearchQuery query, {
     int limit = 100,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    if (safeLimit == 0) {
+      return const [];
+    }
     final candidates = await _candidateFoodsForAdvancedSearch(query);
     final matched = <FoodItem>[];
     for (final item in candidates) {
@@ -159,7 +173,7 @@ class SqliteFoodRepository implements FoodRepository {
       )) {
         matched.add(item);
       }
-      if (matched.length >= limit) {
+      if (matched.length >= safeLimit) {
         break;
       }
     }
@@ -203,9 +217,10 @@ class SqliteFoodRepository implements FoodRepository {
     String query, {
     int limit = 20,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final items = await searchFoods(query);
     return items
-        .take(limit)
+        .take(safeLimit)
         .map(
           (item) => FoodSummary(
             id: item.id,
@@ -226,7 +241,10 @@ class SqliteFoodRepository implements FoodRepository {
     FoodSearchQuery query, {
     int limit = 100,
   }) async {
-    final items = await searchFoodsAdvanced(query, limit: limit);
+    final items = await searchFoodsAdvanced(
+      query,
+      limit: normalizeRepositoryReadLimit(limit),
+    );
     return items.map(_qualityService.summaryFromItem).toList(growable: false);
   }
 
@@ -235,6 +253,7 @@ class SqliteFoodRepository implements FoodRepository {
     String country, {
     int limit = 1000,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final normalizedCountry = country.trim().toLowerCase();
     final rows = await _db.rawQuery(
       '''
@@ -246,7 +265,7 @@ class SqliteFoodRepository implements FoodRepository {
       ORDER BY f.name COLLATE NOCASE ASC
       LIMIT ?
     ''',
-      [normalizedCountry, normalizedCountry, limit],
+      [normalizedCountry, normalizedCountry, safeLimit],
     );
 
     return rows
@@ -282,13 +301,13 @@ class SqliteFoodRepository implements FoodRepository {
       'source_record',
       where: 'canonical_food_id = ?',
       whereArgs: [canonicalFoodId],
-      orderBy: 'fetched_at DESC',
+      orderBy: 'fetched_at DESC, id ASC',
     );
     final aliasRows = await _db.query(
       'food_alias',
       where: 'canonical_food_id = ?',
       whereArgs: [canonicalFoodId],
-      orderBy: 'alias COLLATE NOCASE ASC',
+      orderBy: 'alias COLLATE NOCASE ASC, alias ASC, id ASC',
     );
     final foodRows = await _db.query(
       'foods',
@@ -306,7 +325,7 @@ class SqliteFoodRepository implements FoodRepository {
         '?',
       ).join(', ');
       final observationRows = await _db.rawQuery(
-        'SELECT * FROM nutrient_observation WHERE source_record_id IN ($placeholders) ORDER BY canonical_label COLLATE NOCASE ASC',
+        'SELECT * FROM nutrient_observation WHERE source_record_id IN ($placeholders) ORDER BY canonical_label COLLATE NOCASE ASC, canonical_label ASC, source_record_id ASC, id ASC',
         sourceIds,
       );
       for (final row in observationRows) {
@@ -366,17 +385,25 @@ class SqliteFoodRepository implements FoodRepository {
 
   @override
   Future<List<MergeReviewIssue>> getMergeReviewIssues({int limit = 100}) async {
-    final foods = await getAllFoods();
+    final safeLimit = normalizeRepositoryReadLimit(limit);
+    if (safeLimit == 0) {
+      return const [];
+    }
+    return (await queryMergeReviewIssues(
+      MergeReviewIssueQuery(limit: safeLimit),
+    )).items;
+  }
+
+  @override
+  Future<MergeReviewIssuePage> queryMergeReviewIssues(
+    MergeReviewIssueQuery query,
+  ) async {
+    final detailsSnapshot = await _db.transaction(_loadAllFoodDetails);
     final issues = <MergeReviewIssue>[];
-    for (final food in foods) {
-      final details = await getFoodDetails(food.id);
-      if (details == null) {
-        continue;
-      }
+    for (final details in detailsSnapshot) {
       issues.addAll(_qualityService.reviewIssuesForDetails(details));
     }
-    issues.sort((left, right) => right.createdAt.compareTo(left.createdAt));
-    return issues.take(limit).toList(growable: false);
+    return MergeReviewIssuePage.fromIssues(issues: issues, query: query);
   }
 
   @override
@@ -523,10 +550,11 @@ class SqliteFoodRepository implements FoodRepository {
   Future<List<ManualGovernanceLogEntry>> getManualGovernanceLogs({
     int limit = 50,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final rows = await _db.query(
       'manual_governance_log',
       orderBy: 'created_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
     return rows.map(_mapManualGovernanceLog).toList(growable: false);
   }
@@ -562,10 +590,11 @@ class SqliteFoodRepository implements FoodRepository {
 
   @override
   Future<List<ImportLogEntry>> getImportLogs({int limit = 20}) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final rows = await _db.query(
       'import_logs',
       orderBy: 'created_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
 
     return rows
@@ -606,6 +635,7 @@ class SqliteFoodRepository implements FoodRepository {
     String? status,
     int limit = 20,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final where = <String>[];
     final whereArgs = <Object?>[];
 
@@ -631,7 +661,7 @@ class SqliteFoodRepository implements FoodRepository {
       where: where.isEmpty ? null : where.join(' AND '),
       whereArgs: whereArgs.isEmpty ? null : whereArgs,
       orderBy: 'started_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
     return rows.map(_mapFetchJob).toList(growable: false);
   }
@@ -665,10 +695,11 @@ class SqliteFoodRepository implements FoodRepository {
   Future<List<AiSuggestionLogEntry>> getAiSuggestionLogs({
     int limit = 20,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final rows = await _db.query(
       'ai_suggestion_log',
       orderBy: 'created_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
     return rows
         .map(
@@ -726,10 +757,11 @@ class SqliteFoodRepository implements FoodRepository {
   Future<List<DatasetArtifactEntry>> getDatasetArtifacts({
     int limit = 50,
   }) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final rows = await _db.query(
       'dataset_artifact',
       orderBy: 'fetched_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
     return rows.map(_mapDatasetArtifact).toList(growable: false);
   }
@@ -788,10 +820,11 @@ class SqliteFoodRepository implements FoodRepository {
 
   @override
   Future<List<ExportHistoryEntry>> getExportHistory({int limit = 20}) async {
+    final safeLimit = normalizeRepositoryReadLimit(limit);
     final rows = await _db.query(
       'export_history',
       orderBy: 'created_at DESC',
-      limit: limit,
+      limit: safeLimit,
     );
     return rows.map(_mapExportHistory).toList(growable: false);
   }
@@ -1421,7 +1454,7 @@ class SqliteFoodRepository implements FoodRepository {
 
     final placeholders = List<String>.filled(sourceIds.length, '?').join(', ');
     final auditRows = await _db.rawQuery(
-      'SELECT * FROM merge_audit WHERE source_record_id IN ($placeholders) ORDER BY created_at DESC',
+      'SELECT * FROM merge_audit WHERE source_record_id IN ($placeholders) ORDER BY source_record_id ASC, created_at DESC, id DESC',
       sourceIds,
     );
     if (auditRows.isEmpty) {
@@ -1437,6 +1470,179 @@ class SqliteFoodRepository implements FoodRepository {
       'SELECT * FROM merge_audit_candidate WHERE merge_audit_id IN ($candidatePlaceholders) ORDER BY id ASC',
       auditIds,
     );
+    return _mergeAuditViewsFromRows(
+      auditRows: auditRows,
+      candidateRows: candidateRows,
+    );
+  }
+
+  Future<List<FoodDetails>> _loadAllFoodDetails(DatabaseExecutor db) async {
+    final canonicalRows = await db.rawQuery('''
+      SELECT cf.*
+      FROM foods AS f
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY f.name COLLATE NOCASE ASC, f.id ASC
+    ''');
+    if (canonicalRows.isEmpty) {
+      return const [];
+    }
+
+    final sourceRows = await db.rawQuery('''
+      SELECT sr.*
+      FROM source_record AS sr
+      INNER JOIN foods AS f ON f.id = sr.canonical_food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY sr.canonical_food_id ASC, sr.fetched_at DESC, sr.id ASC
+    ''');
+    final aliasRows = await db.rawQuery('''
+      SELECT fa.*
+      FROM food_alias AS fa
+      INNER JOIN foods AS f ON f.id = fa.canonical_food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY fa.canonical_food_id ASC,
+               fa.alias COLLATE NOCASE ASC,
+               fa.alias ASC,
+               fa.id ASC
+    ''');
+    final nutrientRows = await db.rawQuery('''
+      SELECT n.*
+      FROM nutrients AS n
+      INNER JOIN foods AS f ON f.id = n.food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY n.food_id ASC,
+               n.label COLLATE NOCASE ASC,
+               n.label ASC
+    ''');
+    final observationRows = await db.rawQuery('''
+      SELECT sr.canonical_food_id AS owner_canonical_id, no.*
+      FROM nutrient_observation AS no
+      INNER JOIN source_record AS sr ON sr.id = no.source_record_id
+      INNER JOIN foods AS f ON f.id = sr.canonical_food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY owner_canonical_id ASC,
+               no.canonical_label COLLATE NOCASE ASC,
+               no.canonical_label ASC,
+               no.source_record_id ASC,
+               no.id ASC
+    ''');
+    final auditRows = await db.rawQuery('''
+      SELECT ma.*
+      FROM merge_audit AS ma
+      INNER JOIN source_record AS sr ON sr.id = ma.source_record_id
+      INNER JOIN foods AS f ON f.id = sr.canonical_food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY ma.source_record_id ASC, ma.created_at DESC, ma.id DESC
+    ''');
+    final candidateRows = await db.rawQuery('''
+      SELECT mac.*
+      FROM merge_audit_candidate AS mac
+      INNER JOIN merge_audit AS ma ON ma.id = mac.merge_audit_id
+      INNER JOIN source_record AS sr ON sr.id = ma.source_record_id
+      INNER JOIN foods AS f ON f.id = sr.canonical_food_id
+      INNER JOIN canonical_food AS cf ON cf.id = f.id
+      ORDER BY mac.merge_audit_id ASC, mac.id ASC
+    ''');
+
+    final sourceRowsByCanonical = <String, List<Map<String, Object?>>>{};
+    for (final row in sourceRows) {
+      final canonicalId = row['canonical_food_id']! as String;
+      sourceRowsByCanonical.putIfAbsent(canonicalId, () => []).add(row);
+    }
+
+    final aliasesByCanonical = <String, Set<String>>{};
+    for (final row in aliasRows) {
+      aliasesByCanonical
+          .putIfAbsent(row['canonical_food_id']! as String, () => <String>{})
+          .add(row['alias']! as String);
+    }
+
+    final nutrientsByFood = <String, List<Nutrient>>{};
+    for (final row in nutrientRows) {
+      nutrientsByFood
+          .putIfAbsent(row['food_id']! as String, () => <Nutrient>[])
+          .add(
+            Nutrient(
+              label: row['label']! as String,
+              amount: (row['amount']! as num).toDouble(),
+              unit: row['unit']! as String,
+            ),
+          );
+    }
+
+    final observationsByCanonical = <String, List<NutrientObservationView>>{};
+    for (final row in observationRows) {
+      final sourceId = row['source_record_id']! as String;
+      final canonicalId = row['owner_canonical_id']! as String;
+      observationsByCanonical
+          .putIfAbsent(canonicalId, () => <NutrientObservationView>[])
+          .add(
+            NutrientObservationView(
+              sourceRecordId: sourceId,
+              label: row['label']! as String,
+              canonicalLabel: row['canonical_label']! as String,
+              amount: (row['amount']! as num).toDouble(),
+              unit: row['unit']! as String,
+              originalUnit: row['original_unit']! as String,
+            ),
+          );
+    }
+
+    final mergeAuditsBySource = _mergeAuditViewsFromRows(
+      auditRows: auditRows,
+      candidateRows: candidateRows,
+    );
+    final details = <FoodDetails>[];
+    for (final canonical in canonicalRows) {
+      final canonicalId = canonical['id']! as String;
+      final canonicalSourceRows =
+          sourceRowsByCanonical[canonicalId] ?? const <Map<String, Object?>>[];
+      details.add(
+        FoodDetails(
+          id: canonicalId,
+          displayName: canonical['display_name']! as String,
+          category: canonical['canonical_category']! as String,
+          countryHint: canonical['canonical_country_hint']! as String,
+          description: canonical['description']! as String,
+          servingBasis: canonical['serving_basis']! as String,
+          lastAggregatedAt: DateTime.parse(
+            canonical['last_aggregated_at']! as String,
+          ),
+          aliases:
+              aliasesByCanonical[canonicalId]?.toList(growable: false) ??
+              const <String>[],
+          sourceRecords: canonicalSourceRows
+              .map(
+                (row) => SourceRecordView(
+                  id: row['id']! as String,
+                  importerId: row['importer_id']! as String,
+                  sourceName: row['source_name']! as String,
+                  sourceRecordId: row['source_record_id']! as String,
+                  country: row['country']! as String,
+                  recordTitle: row['record_title']! as String,
+                  recordDescription: row['record_description']! as String,
+                  fetchedAt: DateTime.parse(row['fetched_at']! as String),
+                  sourceUpdatedAt: DateTime.parse(
+                    row['source_updated_at']! as String,
+                  ),
+                  mergeAudit: mergeAuditsBySource[row['id']! as String],
+                ),
+              )
+              .toList(growable: false),
+          aggregatedNutrients:
+              nutrientsByFood[canonicalId] ?? const <Nutrient>[],
+          nutrientObservations:
+              observationsByCanonical[canonicalId] ??
+              const <NutrientObservationView>[],
+        ),
+      );
+    }
+    return details;
+  }
+
+  Map<String, MergeAuditView> _mergeAuditViewsFromRows({
+    required List<Map<String, Object?>> auditRows,
+    required List<Map<String, Object?>> candidateRows,
+  }) {
     final candidatesByAudit = <String, List<MergeCandidateEvaluationView>>{};
     for (final row in candidateRows) {
       final auditId = row['merge_audit_id']! as String;
@@ -1461,19 +1667,22 @@ class SqliteFoodRepository implements FoodRepository {
     for (final row in auditRows) {
       final sourceId = row['source_record_id']! as String;
       final auditId = row['id']! as String;
-      result[sourceId] = MergeAuditView(
-        sourceRecordId: sourceId,
-        action: row['action']! as String,
-        confidence: (row['confidence']! as num).toDouble(),
-        matchedBy: row['matched_by']! as String,
-        reason: row['reason']! as String,
-        itemAliasKey: row['item_alias_key']! as String,
-        itemCategoryKey: row['item_category_key']! as String,
-        itemServingKey: row['item_serving_key']! as String,
-        candidateEvaluations:
-            candidatesByAudit[auditId] ??
-            const <MergeCandidateEvaluationView>[],
-        createdAt: DateTime.parse(row['created_at']! as String),
+      result.putIfAbsent(
+        sourceId,
+        () => MergeAuditView(
+          sourceRecordId: sourceId,
+          action: row['action']! as String,
+          confidence: (row['confidence']! as num).toDouble(),
+          matchedBy: row['matched_by']! as String,
+          reason: row['reason']! as String,
+          itemAliasKey: row['item_alias_key']! as String,
+          itemCategoryKey: row['item_category_key']! as String,
+          itemServingKey: row['item_serving_key']! as String,
+          candidateEvaluations:
+              candidatesByAudit[auditId] ??
+              const <MergeCandidateEvaluationView>[],
+          createdAt: DateTime.parse(row['created_at']! as String),
+        ),
       );
     }
     return result;

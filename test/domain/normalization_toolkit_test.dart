@@ -88,5 +88,41 @@ void main() {
         expect(food.nutrients.any((n) => n.label == 'Protein'), isTrue);
       },
     );
+
+    test(
+      'drops non-finite nutrient amounts without losing valid nutrients',
+      () {
+        const normalizer = FoodRecordNormalizer();
+        final food = normalizer.normalizeRecord(
+          importerId: 'test',
+          record: RawFoodRecord(
+            sourceRecordId: '002',
+            name: 'Finite sample',
+            category: 'Test',
+            country: 'Canada',
+            sourceName: 'Example Source',
+            description: 'Test record',
+            servingBasis: 'Per 100 g',
+            tags: const [],
+            nutrients: [
+              const RawNutrientRecord(
+                label: 'Protein',
+                amount: double.nan,
+                unit: 'g',
+              ),
+              const RawNutrientRecord(
+                label: 'Sodium',
+                amount: double.maxFinite,
+                unit: 'g',
+              ),
+              const RawNutrientRecord(label: 'Fat', amount: 2, unit: 'g'),
+            ],
+            lastUpdated: DateTime(2026, 4, 18),
+          ),
+        );
+
+        expect(food.nutrients.map((nutrient) => nutrient.label), ['Fat']);
+      },
+    );
   });
 }

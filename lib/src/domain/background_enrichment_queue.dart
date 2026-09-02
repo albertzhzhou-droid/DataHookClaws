@@ -137,7 +137,8 @@ class BackgroundEnrichmentQueue {
         ),
       );
 
-      await persistJob(
+      await _persistJobBestEffort(
+        persistJob,
         FetchJobEntry(
           id: _fetchJobId(job.id, importerId),
           query: job.query,
@@ -160,7 +161,8 @@ class BackgroundEnrichmentQueue {
         );
         successCount += 1;
         lastMessage = summary.message;
-        await persistJob(
+        await _persistJobBestEffort(
+          persistJob,
           FetchJobEntry(
             id: _fetchJobId(job.id, importerId),
             query: job.query,
@@ -183,7 +185,8 @@ class BackgroundEnrichmentQueue {
       } catch (error) {
         failureCount += 1;
         lastMessage = '$error';
-        await persistJob(
+        await _persistJobBestEffort(
+          persistJob,
           FetchJobEntry(
             id: _fetchJobId(job.id, importerId),
             query: job.query,
@@ -256,7 +259,8 @@ class BackgroundEnrichmentQueue {
     required List<String> importerIds,
   }) async {
     for (final importerId in importerIds) {
-      await persistJob(
+      await _persistJobBestEffort(
+        persistJob,
         FetchJobEntry(
           id: _fetchJobId(job.id, importerId),
           query: job.query,
@@ -276,7 +280,8 @@ class BackgroundEnrichmentQueue {
     Future<void> Function(FetchJobEntry entry) persistJob,
   ) async {
     for (final importerId in job.remainingImporterIds) {
-      await persistJob(
+      await _persistJobBestEffort(
+        persistJob,
         FetchJobEntry(
           id: _fetchJobId(job.id, importerId),
           query: job.query,
@@ -297,7 +302,8 @@ class BackgroundEnrichmentQueue {
     Future<void> Function(FetchJobEntry entry) persistJob,
   ) async {
     for (final importerId in remaining) {
-      await persistJob(
+      await _persistJobBestEffort(
+        persistJob,
         FetchJobEntry(
           id: _fetchJobId(job.id, importerId),
           query: job.query,
@@ -309,6 +315,18 @@ class BackgroundEnrichmentQueue {
           message: 'Background enrichment cancelled after current source.',
         ),
       );
+    }
+  }
+
+  Future<void> _persistJobBestEffort(
+    Future<void> Function(FetchJobEntry entry) persistJob,
+    FetchJobEntry entry,
+  ) async {
+    try {
+      await persistJob(entry);
+    } catch (_) {
+      // Fetch-job history is supplemental diagnostics; it must not stop
+      // enrichment progress or change the source outcome.
     }
   }
 

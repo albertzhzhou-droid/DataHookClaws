@@ -9,6 +9,32 @@ import 'package:path_provider/path_provider.dart';
 import '../models/import_models.dart';
 import 'official_dataset_manifest.dart';
 
+bool _isPathWithinDirectory(String directoryPath, String candidatePath) {
+  final relativePath = p.relative(candidatePath, from: directoryPath);
+  if (p.isAbsolute(relativePath)) {
+    return false;
+  }
+  return relativePath.isEmpty ||
+      (relativePath != '..' &&
+          !relativePath.startsWith('..${Platform.pathSeparator}'));
+}
+
+String _requireSafeImporterId(String importerId) {
+  if (importerId.isEmpty ||
+      importerId == '.' ||
+      importerId == '..' ||
+      p.isAbsolute(importerId) ||
+      importerId.contains('/') ||
+      importerId.contains('\\')) {
+    throw ArgumentError.value(
+      importerId,
+      'importerId',
+      'must be a single non-empty path component',
+    );
+  }
+  return importerId;
+}
+
 class OfficialDatasetGrabber {
   OfficialDatasetGrabber({
     DatasetTransport? transport,
@@ -119,8 +145,9 @@ class HttpDatasetTransport implements DatasetTransport {
 
   @override
   Future<Directory> datasetRoot(String importerId) async {
+    final safeImporterId = _requireSafeImporterId(importerId);
     final root = await _rootResolver();
-    return Directory(p.join(root.path, 'official_datasets', importerId));
+    return Directory(p.join(root.path, 'official_datasets', safeImporterId));
   }
 
   @override
@@ -133,7 +160,19 @@ class HttpDatasetTransport implements DatasetTransport {
     final targetDirectory = Directory(p.join(root.path, 'downloads'));
     await targetDirectory.create(recursive: true);
 
-    final targetPath = p.join(targetDirectory.path, suggestedFileName);
+    final targetDirectoryPath = p.normalize(targetDirectory.path);
+    final targetPath = p.normalize(
+      p.join(targetDirectoryPath, suggestedFileName),
+    );
+    if (p.isAbsolute(suggestedFileName) ||
+        targetPath == targetDirectoryPath ||
+        !_isPathWithinDirectory(targetDirectoryPath, targetPath)) {
+      throw ArgumentError.value(
+        suggestedFileName,
+        'suggestedFileName',
+        'must resolve to a file inside the dataset download directory',
+      );
+    }
     final targetFile = File(targetPath);
     if (targetFile.existsSync() && await targetFile.length() > 0) {
       return targetPath;
@@ -233,9 +272,10 @@ class DatasetPackagePreparer {
     required String importerId,
     required String zipPath,
   }) async {
+    final safeImporterId = _requireSafeImporterId(importerId);
     final root = await _rootResolver();
     final extractDirectory = Directory(
-      p.join(root.path, 'official_datasets', importerId, 'extracted'),
+      p.join(root.path, 'official_datasets', safeImporterId, 'extracted'),
     );
 
     final sentinel = File(p.join(extractDirectory.path, '.ready'));
@@ -244,11 +284,12 @@ class DatasetPackagePreparer {
     }
 
     await extractDirectory.create(recursive: true);
+    final extractPath = p.normalize(extractDirectory.path);
     final archive = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
 
     for (final file in archive) {
-      final safePath = p.normalize(p.join(extractDirectory.path, file.name));
-      if (!safePath.startsWith(extractDirectory.path)) {
+      final safePath = p.normalize(p.join(extractPath, file.name));
+      if (!_isPathWithinDirectory(extractPath, safePath)) {
         continue;
       }
 

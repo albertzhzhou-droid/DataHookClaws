@@ -25,12 +25,20 @@ class ModelBudgetSnapshot {
 
 class ModelBudgetController {
   ModelBudgetController({
-    this.maxCallsPerMinute = 6,
-    this.timeout = const Duration(seconds: 3),
-    this.maxTokens = 256,
-    this.failureCooldown = const Duration(seconds: 30),
+    int maxCallsPerMinute = 6,
+    Duration timeout = const Duration(seconds: 3),
+    int maxTokens = 256,
+    Duration failureCooldown = const Duration(seconds: 30),
     DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now;
+  }) : maxCallsPerMinute = maxCallsPerMinute < 0 ? 6 : maxCallsPerMinute,
+       timeout = timeout <= Duration.zero
+           ? const Duration(seconds: 3)
+           : timeout,
+       maxTokens = maxTokens <= 0 ? 256 : maxTokens,
+       failureCooldown = failureCooldown <= Duration.zero
+           ? const Duration(seconds: 30)
+           : failureCooldown,
+       _clock = clock ?? DateTime.now;
 
   final int maxCallsPerMinute;
   final Duration timeout;

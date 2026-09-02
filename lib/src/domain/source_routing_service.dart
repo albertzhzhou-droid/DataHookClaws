@@ -21,11 +21,20 @@ class SourceRoutingService {
         .where((job) => job.status == 'failure')
         .map((job) => job.importerId)
         .toSet();
-    final eligible = defaultOrder.where(_canAutoFetch).toList(growable: false);
-    final hinted = sourceHints
-        .where(eligible.contains)
-        .where((id) => !failedImporterIds.contains(id))
-        .toList(growable: false);
+    final eligible = <String>[];
+    for (final importerId in defaultOrder) {
+      if (_canAutoFetch(importerId) && !eligible.contains(importerId)) {
+        eligible.add(importerId);
+      }
+    }
+    final hinted = <String>[];
+    for (final importerId in sourceHints) {
+      if (eligible.contains(importerId) &&
+          !failedImporterIds.contains(importerId) &&
+          !hinted.contains(importerId)) {
+        hinted.add(importerId);
+      }
+    }
     final healthy = eligible
         .where((id) => !hinted.contains(id))
         .where((id) => !failedImporterIds.contains(id));
@@ -33,11 +42,12 @@ class SourceRoutingService {
         .where((id) => !hinted.contains(id))
         .where(failedImporterIds.contains);
 
+    final maxItems = maxImporters < 0 ? 0 : maxImporters;
     return [
       ...hinted,
       ...healthy,
       ...failedButAllowed,
-    ].take(maxImporters).toList(growable: false);
+    ].take(maxItems).toList(growable: false);
   }
 
   bool _canAutoFetch(String importerId) {

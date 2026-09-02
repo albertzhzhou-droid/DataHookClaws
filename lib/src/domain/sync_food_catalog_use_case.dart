@@ -57,7 +57,7 @@ class SyncFoodCatalogUseCase {
       await repository.upsertFoods(foods);
       final datasetPath = preparedRequest.datasetPath?.trim();
       if (datasetPath != null && datasetPath.isNotEmpty) {
-        await repository.upsertDatasetArtifact(
+        await _upsertDatasetArtifactBestEffort(
           DatasetArtifactEntry(
             id: 'artifact-$importerId',
             importerId: importerId,
@@ -79,7 +79,7 @@ class SyncFoodCatalogUseCase {
             'Imported ${foods.length} records from ${importer.displayName}.',
       );
 
-      await repository.addImportLog(
+      await _addImportLogBestEffort(
         ImportLogEntry(
           id: 'log-${DateTime.now().microsecondsSinceEpoch}',
           importerId: importerId,
@@ -95,7 +95,7 @@ class SyncFoodCatalogUseCase {
       return summary;
     } catch (error) {
       final message = 'Import failed for ${importer.displayName}: $error';
-      await repository.addImportLog(
+      await _addImportLogBestEffort(
         ImportLogEntry(
           id: 'log-${DateTime.now().microsecondsSinceEpoch}',
           importerId: importerId,
@@ -108,6 +108,26 @@ class SyncFoodCatalogUseCase {
         ),
       );
       rethrow;
+    }
+  }
+
+  Future<void> _addImportLogBestEffort(ImportLogEntry entry) async {
+    try {
+      await repository.addImportLog(entry);
+    } catch (_) {
+      // Import success or the original import failure must not be masked by
+      // supplemental diagnostics persistence.
+    }
+  }
+
+  Future<void> _upsertDatasetArtifactBestEffort(
+    DatasetArtifactEntry entry,
+  ) async {
+    try {
+      await repository.upsertDatasetArtifact(entry);
+    } catch (_) {
+      // Artifact inventory is supplemental metadata; it must not mask a
+      // normalized import that has already been committed.
     }
   }
 }

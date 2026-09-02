@@ -15,9 +15,9 @@ class FetchPlan {
 
 class FetchBudgetPlanner {
   const FetchBudgetPlanner({
-    this.maxImporters = 2,
-    this.limitPerImporter = 20,
-    this.localHitThreshold = 10,
+    int maxImporters = 2,
+    int limitPerImporter = 20,
+    int localHitThreshold = 10,
     this.sourceRoutingService,
     this.prioritizedImporters = const [
       'usda',
@@ -25,7 +25,9 @@ class FetchBudgetPlanner {
       'uk-mccance',
       'jp-standard',
     ],
-  });
+  }) : maxImporters = maxImporters < 0 ? 2 : maxImporters,
+       limitPerImporter = limitPerImporter <= 0 ? 20 : limitPerImporter,
+       localHitThreshold = localHitThreshold < 0 ? 10 : localHitThreshold;
 
   final int maxImporters;
   final int limitPerImporter;
@@ -41,10 +43,10 @@ class FetchBudgetPlanner {
   }) {
     final normalizedQuery = query.trim();
     if (normalizedQuery.isEmpty || localHitCount >= localHitThreshold) {
-      return const FetchPlan(
+      return FetchPlan(
         shouldFetch: false,
         importerIds: [],
-        limitPerImporter: 20,
+        limitPerImporter: limitPerImporter,
       );
     }
 
@@ -84,12 +86,19 @@ class FetchBudgetPlanner {
   }
 
   List<String> _legacyRoute(List<String> sourceHints, {int? max}) {
-    final hinted = sourceHints
-        .where(prioritizedImporters.contains)
-        .toList(growable: false);
-    return [
-      ...hinted,
-      ...prioritizedImporters.where((item) => !hinted.contains(item)),
-    ].take(max ?? maxImporters).toList(growable: false);
+    final maxItems = max ?? maxImporters;
+    final ordered = <String>[];
+    for (final importerId in sourceHints) {
+      if (prioritizedImporters.contains(importerId) &&
+          !ordered.contains(importerId)) {
+        ordered.add(importerId);
+      }
+    }
+    for (final importerId in prioritizedImporters) {
+      if (!ordered.contains(importerId)) {
+        ordered.add(importerId);
+      }
+    }
+    return ordered.take(maxItems < 0 ? 0 : maxItems).toList(growable: false);
   }
 }

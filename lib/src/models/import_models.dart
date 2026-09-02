@@ -1,10 +1,10 @@
 class ImportRequest {
   const ImportRequest({
     required this.query,
-    required this.limit,
+    required int limit,
     this.apiKey,
     this.datasetPath,
-  });
+  }) : limit = limit < 0 ? 0 : limit;
 
   final String query;
   final int limit;

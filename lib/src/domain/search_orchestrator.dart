@@ -1,5 +1,6 @@
 import '../data/food_repository.dart';
 import '../models/enrichment_queue_state.dart';
+import '../models/fetch_job_entry.dart';
 import '../models/food_item.dart';
 import '../models/query_expansion_result.dart';
 import '../models/search_session_state.dart';
@@ -16,12 +17,16 @@ class SearchOrchestrator {
     required FetchBudgetPlanner budgetPlanner,
     required QueryExpansionService queryExpansionService,
     required BackgroundEnrichmentQueue enrichmentQueue,
+    int maxExpansionCacheEntries = 32,
     SourceRoutingSuggestionService? sourceRoutingSuggestionService,
   }) : _repository = repository,
        _foregroundFetchRunner = foregroundFetchRunner,
        _budgetPlanner = budgetPlanner,
        _queryExpansionService = queryExpansionService,
        _enrichmentQueue = enrichmentQueue,
+       maxExpansionCacheEntries = _validateMaxExpansionCacheEntries(
+         maxExpansionCacheEntries,
+       ),
        _sourceRoutingSuggestionService = sourceRoutingSuggestionService;
 
   final FoodRepository _repository;
@@ -29,6 +34,7 @@ class SearchOrchestrator {
   final FetchBudgetPlanner _budgetPlanner;
   final QueryExpansionService _queryExpansionService;
   final BackgroundEnrichmentQueue _enrichmentQueue;
+  final int maxExpansionCacheEntries;
   final SourceRoutingSuggestionService? _sourceRoutingSuggestionService;
   final Map<String, QueryExpansionResult> _expansionCache = {};
 
@@ -63,15 +69,12 @@ class SearchOrchestrator {
     );
 
     final expansion = await _queryExpansionService.expand(query);
-    _expansionCache[query] = expansion;
+    _cacheExpansion(query, expansion);
     final sourceHints = await _sourceHintsWithRoutingSuggestion(
       query: expansion.primaryQuery,
       sourceHints: expansion.sourceHints,
     );
-    final recentFailures = await _repository.getRecentFetchJobs(
-      status: 'failure',
-      limit: 20,
-    );
+    final recentFailures = await _recentFailuresBestEffort();
     final plan = _budgetPlanner.plan(
       query: expansion.primaryQuery,
       localHitCount: localResults.length,
@@ -109,8 +112,20 @@ class SearchOrchestrator {
       persistJob: _repository.upsertFetchJob,
     );
 
-    final refreshedResults = await _repository.searchFoods(query);
-    final combinedResults = _merge(localResults, refreshedResults);
+    List<FoodItem> refreshedResults;
+    var refreshedReadSucceeded = true;
+    try {
+      refreshedResults = await _repository.searchFoods(query);
+    } catch (_) {
+      // The fetch result already contains normalized foods; a transient
+      // reconciliation read must not turn a successful fetch into a failure.
+      refreshedResults = const [];
+      refreshedReadSucceeded = false;
+    }
+    final combinedResults = _merge(
+      localResults,
+      refreshedReadSucceeded ? refreshedResults : fetchResult.importedFoods,
+    );
 
     if (fetchResult.succeededSources.isEmpty) {
       yield SearchSessionState(
@@ -145,18 +160,18 @@ class SearchOrchestrator {
       return;
     }
 
-    final expansion =
-        _expansionCache[query] ?? await _queryExpansionService.expand(query);
-    _expansionCache[query] = expansion;
+    final expansion = _cachedExpansion(query);
+    final resolvedExpansion =
+        expansion ?? await _queryExpansionService.expand(query);
+    if (expansion == null) {
+      _cacheExpansion(query, resolvedExpansion);
+    }
     final sourceHints = await _sourceHintsWithRoutingSuggestion(
-      query: expansion.primaryQuery,
-      sourceHints: expansion.sourceHints,
+      query: resolvedExpansion.primaryQuery,
+      sourceHints: resolvedExpansion.sourceHints,
     );
 
-    final recentFailures = await _repository.getRecentFetchJobs(
-      status: 'failure',
-      limit: 20,
-    );
+    final recentFailures = await _recentFailuresBestEffort();
     final remainingImporterIds = _budgetPlanner.routeRemainingImporters(
       sourceHints: sourceHints,
       alreadyTriedImporterIds: alreadyTriedImporterIds,
@@ -165,7 +180,7 @@ class SearchOrchestrator {
 
     await _enrichmentQueue.schedule(
       query: query,
-      normalizedQuery: expansion.primaryQuery,
+      normalizedQuery: resolvedExpansion.primaryQuery,
       importerIds: remainingImporterIds,
       limitPerImporter: _budgetPlanner.limitPerImporter,
       persistJob: _repository.upsertFetchJob,
@@ -197,6 +212,44 @@ class SearchOrchestrator {
         ),
       ],
     );
+  }
+
+  Future<List<FetchJobEntry>> _recentFailuresBestEffort() async {
+    try {
+      return await _repository.getRecentFetchJobs(status: 'failure', limit: 20);
+    } catch (_) {
+      // Failure history only influences source ordering; it must not block
+      // local search, foreground fetching, or background enrichment.
+      return const [];
+    }
+  }
+
+  QueryExpansionResult? _cachedExpansion(String query) {
+    final cached = _expansionCache.remove(query);
+    if (cached == null) {
+      return null;
+    }
+    _expansionCache[query] = cached;
+    return cached;
+  }
+
+  void _cacheExpansion(String query, QueryExpansionResult expansion) {
+    _expansionCache.remove(query);
+    _expansionCache[query] = expansion;
+    while (_expansionCache.length > maxExpansionCacheEntries) {
+      _expansionCache.remove(_expansionCache.keys.first);
+    }
+  }
+
+  static int _validateMaxExpansionCacheEntries(int value) {
+    if (value <= 0) {
+      throw ArgumentError.value(
+        value,
+        'maxExpansionCacheEntries',
+        'must be greater than zero',
+      );
+    }
+    return value;
   }
 
   List<FoodItem> _merge(List<FoodItem> left, List<FoodItem> right) {

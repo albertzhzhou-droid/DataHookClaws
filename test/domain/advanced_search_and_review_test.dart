@@ -2,7 +2,9 @@ import 'package:data_hook_claws/src/api/food_api_dto.dart';
 import 'package:data_hook_claws/src/data/memory_food_repository.dart';
 import 'package:data_hook_claws/src/models/food_item.dart';
 import 'package:data_hook_claws/src/models/food_search_query.dart';
+import 'package:data_hook_claws/src/models/merge_review_filter.dart';
 import 'package:data_hook_claws/src/models/merge_review_issue.dart';
+import 'package:data_hook_claws/src/models/merge_review_issue_query.dart';
 import 'package:data_hook_claws/src/models/nutrient.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -45,6 +47,35 @@ void main() {
       expect(results.single.name, 'Atlantic Salmon');
     },
   );
+
+  test('negative repository read limits return empty pages', () async {
+    final repository = MemoryFoodRepository(
+      seedItems: [
+        _food(
+          id: 'canada-cnf:salmon',
+          name: 'Atlantic Salmon',
+          category: 'Seafood',
+          country: 'Canada',
+          sourceName: 'Canadian Nutrient File',
+          protein: 22,
+        ),
+      ],
+    );
+
+    expect(
+      await repository.searchFoodsAdvanced(
+        const FoodSearchQuery(text: 'salmon'),
+        limit: -1,
+      ),
+      isEmpty,
+    );
+    expect(await repository.searchFoodSummaries('salmon', limit: -1), isEmpty);
+    expect(
+      await repository.searchFoodSummariesByCountry('Canada', limit: -1),
+      isEmpty,
+    );
+    expect(await repository.getMergeReviewIssues(limit: -1), isEmpty);
+  });
 
   test(
     'advanced search falls back to legacy nutrients when observations absent',
@@ -106,6 +137,20 @@ void main() {
       ]);
 
       final issues = await repository.getMergeReviewIssues();
+      final categoryConflicts = issues.where(
+        (issue) =>
+            issue.severity == MergeReviewSeverity.high &&
+            issue.type == MergeReviewIssueType.categoryConflictCandidate,
+      );
+      final conflictPage = await repository.queryMergeReviewIssues(
+        MergeReviewIssueQuery(
+          filter: const MergeReviewFilter(
+            severity: MergeReviewSeverity.high,
+            type: MergeReviewIssueType.categoryConflictCandidate,
+          ),
+          limit: 1,
+        ),
+      );
 
       expect(
         issues.any(
@@ -127,6 +172,14 @@ void main() {
         ),
         isTrue,
       );
+      expect(conflictPage.totalCount, issues.length);
+      expect(conflictPage.matchingCount, categoryConflicts.length);
+      expect(conflictPage.items, hasLength(1));
+      expect(
+        conflictPage.items.single.type,
+        MergeReviewIssueType.categoryConflictCandidate,
+      );
+      expect(conflictPage.items.single.severity, MergeReviewSeverity.high);
     },
   );
 

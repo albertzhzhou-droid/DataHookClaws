@@ -63,6 +63,9 @@ class FoodRecordNormalizer {
   }
 
   Nutrient? _normalizeNutrient(RawNutrientRecord rawNutrient) {
+    if (!rawNutrient.amount.isFinite) {
+      return null;
+    }
     final aliasKey = textNormalizer.aliasKey(rawNutrient.label);
     final canonical = nutrientDictionary.lookup(aliasKey);
     final resolvedLabel =
@@ -78,7 +81,7 @@ class FoodRecordNormalizer {
       toUnit: resolvedUnit,
     );
 
-    if (convertedAmount == null) {
+    if (convertedAmount == null || !convertedAmount.isFinite) {
       return null;
     }
 

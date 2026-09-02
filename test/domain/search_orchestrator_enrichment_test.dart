@@ -73,7 +73,9 @@ void main() {
     final orchestrator = SearchOrchestrator(
       repository: repository,
       foregroundFetchRunner: _ForegroundRunnerThatSeeds(repository),
-      budgetPlanner: const FetchBudgetPlanner(),
+      budgetPlanner: const FetchBudgetPlanner(
+        prioritizedImporters: ['uk-mccance'],
+      ),
       queryExpansionService: _HintingExpansionService(),
       enrichmentQueue: BackgroundEnrichmentQueue(syncUseCase: useCase),
     );
@@ -92,6 +94,76 @@ void main() {
 
     expect(states.last.status, EnrichmentStatus.failed);
   });
+
+  test(
+    'enrichment continues when recent fetch-job history read fails',
+    () async {
+      final repository = _FailingRecentFetchJobsRepository();
+      final useCase = SyncFoodCatalogUseCase(
+        repository: repository,
+        normalizer: const FoodRecordNormalizer(),
+        importers: [_FakeImporter(id: 'uk-mccance')],
+      );
+      final orchestrator = SearchOrchestrator(
+        repository: repository,
+        foregroundFetchRunner: _ForegroundRunnerThatSeeds(repository),
+        budgetPlanner: const FetchBudgetPlanner(
+          prioritizedImporters: ['uk-mccance'],
+        ),
+        queryExpansionService: _HintingExpansionService(),
+        enrichmentQueue: BackgroundEnrichmentQueue(syncUseCase: useCase),
+      );
+
+      await orchestrator.search('salmon').drain<void>();
+
+      final states = <EnrichmentQueueState>[];
+      final subscription = orchestrator.currentEnrichmentState.listen(
+        states.add,
+      );
+      addTearDown(subscription.cancel);
+
+      await orchestrator.scheduleEnrichment('salmon', const ['canada-cnf']);
+      repository.failRecentFetchJobReads = false;
+      await Future<void>.delayed(Duration.zero);
+
+      final jobs = await repository.getRecentFetchJobs(
+        query: 'salmon',
+        phase: 'enrichment',
+        limit: 10,
+      );
+      expect(repository.recentFetchJobsReadAttempts, 3);
+      expect(jobs, hasLength(1));
+      expect(jobs.single.status, 'success');
+      expect(states.last.status, EnrichmentStatus.completed);
+      expect((await repository.searchFoods('salmon')), hasLength(2));
+    },
+  );
+}
+
+class _FailingRecentFetchJobsRepository extends MemoryFoodRepository {
+  bool failRecentFetchJobReads = true;
+  int recentFetchJobsReadAttempts = 0;
+
+  @override
+  Future<List<FetchJobEntry>> getRecentFetchJobs({
+    String? query,
+    String? phase,
+    String? importerId,
+    String? status,
+    int limit = 20,
+  }) async {
+    recentFetchJobsReadAttempts += 1;
+    if (failRecentFetchJobReads) {
+      throw StateError('fetch-job history unavailable');
+    }
+    return super.getRecentFetchJobs(
+      query: query,
+      phase: phase,
+      importerId: importerId,
+      status: status,
+      limit: limit,
+    );
+  }
 }
 
 class _ForegroundRunnerThatSeeds extends ForegroundFetchRunner {
